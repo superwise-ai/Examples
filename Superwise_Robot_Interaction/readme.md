@@ -1,0 +1,1 @@
+This notebook is a basica illustration of leveraging Superwise to control robot commands including text conversion for necessary input to ROS, Guardrails for ensuring only proper inputs are allowed, and Observability to monitor the interactions with the Robot
