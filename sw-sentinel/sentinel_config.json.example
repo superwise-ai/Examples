@@ -1,0 +1,60 @@
+{
+  "_comment": "SW-Sentinel Configuration — copy this file to sentinel_config.json and fill in your credentials",
+
+  "superwise_client_id":     "YOUR_SUPERWISE_CLIENT_ID",
+  "superwise_client_secret": "YOUR_SUPERWISE_CLIENT_SECRET",
+
+  "proxy_host": "127.0.0.1",
+  "proxy_port": 8080,
+
+  "anthropic_api_base": "https://api.anthropic.com",
+  "anthropic_api_key":  "",
+
+  "upstream_timeout_seconds": 120,
+
+  "on_superwise_error": "fail_open",
+
+  "max_check_chars": 2000,
+
+  "log_level":     "INFO",
+  "log_file":      "sw_sentinel.log",
+  "violation_log": "sw_sentinel_violations.log",
+
+  "blocked_input_message":  "This request has been blocked by compliance policy. The input content violated one or more security guardrails (PII, jailbreak attempt, or toxic content detected). Please reformulate your request.",
+  "blocked_output_message": "The model response has been blocked by compliance policy. The generated content contained sensitive information that cannot be returned. Please rephrase your request.",
+
+  "skip_patterns": [
+    "Continue your Paperclip work",
+    "You are agent",
+    "Base directory for this skill"
+  ],
+
+  "guardrails": {
+    "input": {
+      "pii_detection": {
+        "enabled": true,
+        "threshold": 0.5,
+        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
+      },
+      "jailbreak_detection": {
+        "enabled": false,
+        "_comment": "Set true to enable. Note: may produce false positives on internal orchestration messages. See README."
+      },
+      "toxicity_detection": {
+        "enabled": false,
+        "threshold": 0.5
+      }
+    },
+    "output": {
+      "pii_detection": {
+        "enabled": true,
+        "threshold": 0.5,
+        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
+      },
+      "toxicity_detection": {
+        "enabled": false,
+        "threshold": 0.5
+      }
+    }
+  }
+}
