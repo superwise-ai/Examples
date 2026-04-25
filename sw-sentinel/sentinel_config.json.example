@@ -23,6 +23,15 @@
   "blocked_input_message":  "This request has been blocked by compliance policy. The input content violated one or more security guardrails (PII, jailbreak attempt, or toxic content detected). Please reformulate your request.",
   "blocked_output_message": "The model response has been blocked by compliance policy. The generated content contained sensitive information that cannot be returned. Please rephrase your request.",
 
+  "injection_patterns": [
+    "ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+    "disregard\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+    "forget\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+    "(reveal|print|show|repeat|output)\\s+(your\\s+)?(system\\s+prompt|original\\s+instructions?|true\\s+instructions?)",
+    "\\bdo\\s+anything\\s+now\\b",
+    "override\\s+(your\\s+)?(safety|content\\s+policy|guidelines?|restrictions?|constraints?)"
+  ],
+
   "skip_patterns": [
     "Continue your Paperclip work",
     "You are agent",

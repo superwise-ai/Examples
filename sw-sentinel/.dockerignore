@@ -1,0 +1,10 @@
+sentinel_config.json
+*.log
+__pycache__/
+*.pyc
+*.pyo
+.git/
+GIT-CHEATSHEET.md
+test_sentinel.sh
+*.jpg
+*.png

@@ -1,0 +1,16 @@
+# Live config — contains credentials, never commit
+sentinel_config.json
+
+# Runtime logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.jpg
+*.png

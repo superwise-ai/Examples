@@ -33,6 +33,7 @@ import re
 import logging
 import argparse
 import threading
+import socketserver
 import requests
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -43,31 +44,127 @@ DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sentinel_config.j
 
 # ── Load configuration ─────────────────────────────────────────────────────────
 
-def load_config(config_path):
-    """Load configuration from JSON file."""
-    if not os.path.exists(config_path):
-        print(f"ERROR: Config file not found: {config_path}")
-        print(f"       Copy sentinel_config.json.example to sentinel_config.json and fill in your credentials.")
+def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1", port=8080):
+    """Return a complete config dict with sensible defaults."""
+    return {
+        "superwise_client_id":      client_id,
+        "superwise_client_secret":  client_secret,
+        "proxy_host":               host,
+        "proxy_port":               port,
+        "anthropic_api_base":       "https://api.anthropic.com",
+        "anthropic_api_key":        api_key,
+        "upstream_timeout_seconds": 120,
+        "on_superwise_error":       "fail_open",
+        "max_check_chars":          2000,
+        "log_level":                "INFO",
+        "log_file":                 "sw_sentinel.log",
+        "violation_log":            "sw_sentinel_violations.log",
+        "blocked_input_message":    "This request has been blocked by compliance policy. The input content violated one or more security guardrails (PII, jailbreak attempt, or toxic content detected). Please reformulate your request.",
+        "blocked_output_message":   "The model response has been blocked by compliance policy. The generated content contained sensitive information that cannot be returned. Please rephrase your request.",
+        "injection_patterns": [
+            "ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+            "disregard\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+            "forget\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions?|prompts?|directives?|rules?)",
+            "(reveal|print|show|repeat|output)\\s+(your\\s+)?(system\\s+prompt|original\\s+instructions?|true\\s+instructions?)",
+            "\\bdo\\s+anything\\s+now\\b",
+            "override\\s+(your\\s+)?(safety|content\\s+policy|guidelines?|restrictions?|constraints?)"
+        ],
+        "skip_patterns": [],
+        "guardrails": {
+            "input": {
+                "pii_detection":      {"enabled": True,  "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
+                "jailbreak_detection":{"enabled": True},
+                "toxicity_detection": {"enabled": False, "threshold": 0.5}
+            },
+            "output": {
+                "pii_detection":      {"enabled": True,  "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
+                "toxicity_detection": {"enabled": False, "threshold": 0.5}
+            }
+        }
+    }
+
+def _config_from_env():
+    """Build config from environment variables (Docker / CI mode)."""
+    return _default_config_body(
+        client_id=os.environ["SUPERWISE_CLIENT_ID"],
+        client_secret=os.environ["SUPERWISE_CLIENT_SECRET"],
+        api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        host=os.environ.get("SENTINEL_HOST", "0.0.0.0"),
+        port=int(os.environ.get("SENTINEL_PORT", "8080")),
+    )
+
+def run_init_wizard(config_path):
+    """Interactive first-time setup wizard. Returns the saved config dict."""
+    import getpass
+
+    sep = "─" * 45
+    print(f"\n  {sep}")
+    print(f"  SW-Sentinel First-Time Setup")
+    print(f"  {sep}")
+    print(f"  No config found. Let's set things up.\n")
+    print(f"  Superwise credentials  (app.superwise.ai → Settings):")
+
+    client_id = input("    Client ID:      > ").strip()
+    if not client_id:
+        print("ERROR: Superwise Client ID is required.")
         sys.exit(1)
 
-    with open(config_path) as f:
-        config = json.load(f)
+    client_secret = getpass.getpass("    Client Secret:  > ").strip()
+    if not client_secret:
+        print("ERROR: Superwise Client Secret is required.")
+        sys.exit(1)
 
-    # Validate required fields
-    required = ["superwise_client_id", "superwise_client_secret"]
-    for field in required:
-        if not config.get(field) or config[field].startswith("YOUR_"):
-            print(f"ERROR: '{field}' not set in {config_path}")
-            print(f"       Edit sentinel_config.json and add your Superwise credentials.")
-            sys.exit(1)
+    print(f"\n  Anthropic API Key  (console.anthropic.com → API Keys):")
+    api_key = getpass.getpass("    API Key (Enter to skip): > ").strip()
 
+    print(f"\n  Proxy settings:")
+    port_raw = input("    Port [8080]: > ").strip()
+    port = int(port_raw) if port_raw.isdigit() else 8080
+
+    config = _default_config_body(client_id, client_secret, api_key, port=port)
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"\n  {sep}")
+    print(f"  Config saved → {config_path}")
+    print(f"  {sep}\n")
     return config
+
+def load_config(config_path):
+    """Load config from file, env vars, or first-run wizard."""
+
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+        required = ["superwise_client_id", "superwise_client_secret"]
+        for field in required:
+            if not config.get(field) or config[field].startswith("YOUR_"):
+                print(f"ERROR: '{field}' not set in {config_path}")
+                sys.exit(1)
+        return config
+
+    # No file — try environment variables (Docker / CI)
+    if os.environ.get("SUPERWISE_CLIENT_ID") and os.environ.get("SUPERWISE_CLIENT_SECRET"):
+        return _config_from_env()
+
+    # No file, no env vars — run wizard if interactive, otherwise fail
+    if sys.stdin.isatty():
+        return run_init_wizard(config_path)
+
+    print(f"ERROR: Config file not found: {config_path}")
+    print(f"       Set SUPERWISE_CLIENT_ID and SUPERWISE_CLIENT_SECRET env vars,")
+    print(f"       or run 'sw-sentinel init' to create a config file.")
+    sys.exit(1)
 
 # ── Globals (populated after config load) ─────────────────────────────────────
 
-CONFIG     = {}
-log        = None
-_sw_lock   = threading.Lock()
+CONFIG                  = {}
+SW_CLIENT               = None
+SW_GUARDRAIL_VERSION_IDS = {}   # direction -> set of version UUIDs for run_versions()
+INJECTION_RE            = []
+log                     = None
+_sw_lock                = threading.Lock()
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 
@@ -88,12 +185,81 @@ def setup_logging(config):
 
 # ── Superwise client ───────────────────────────────────────────────────────────
 
-def get_sw_client():
-    """Create a new Superwise client. Called per-request to avoid thread-safety issues."""
-    os.environ["SUPERWISE_CLIENT_ID"]     = CONFIG["superwise_client_id"]
-    os.environ["SUPERWISE_CLIENT_SECRET"] = CONFIG["superwise_client_secret"]
+def init_sw_client():
+    """Initialize the Superwise client once at startup."""
+    global SW_CLIENT
     from superwise_api.superwise_client import SuperwiseClient
-    return SuperwiseClient()
+    SW_CLIENT = SuperwiseClient(
+        client_id=CONFIG["superwise_client_id"],
+        client_secret=CONFIG["superwise_client_secret"]
+    )
+
+def init_sw_guardrails():
+    """Create or retrieve persistent Superwise guardrails so checks appear in the dashboard."""
+    global SW_GUARDRAIL_VERSION_IDS
+
+    for direction in ["input", "output"]:
+        guards = build_guards(direction)
+        if not guards:
+            continue
+
+        name = f"SW-Sentinel {direction.title()}"
+        try:
+            page  = SW_CLIENT.guardrails.get(search=name, size=25)
+            items = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
+            existing = [g for g in items if g.name == name]
+
+            if existing:
+                guardrail = existing[0]
+                if guardrail.current_version:
+                    SW_GUARDRAIL_VERSION_IDS[direction] = {guardrail.current_version.id}
+                    log.info(f"  SW guardrail [{direction}]: existing (id={str(guardrail.id)[:8]}...)")
+                    continue
+                guardrail_id = str(guardrail.id)
+            else:
+                guardrail    = SW_CLIENT.guardrails.create(
+                    name=name,
+                    description=f"SW-Sentinel proxy {direction} guardrail"
+                )
+                guardrail_id = str(guardrail.id)
+
+            version = SW_CLIENT.guardrails.create_version(
+                guardrail_id=guardrail_id,
+                name="v1",
+                guardrules=guards
+            )
+            SW_GUARDRAIL_VERSION_IDS[direction] = {version.id}
+            log.info(f"  SW guardrail [{direction}]: created (version={str(version.id)[:8]}...)")
+
+        except Exception as e:
+            log.warning(f"  SW guardrail [{direction}]: setup failed ({e}) — using stateless checks")
+
+def init_injection_patterns():
+    """Pre-compile injection pattern regexes from config at startup."""
+    global INJECTION_RE
+    INJECTION_RE = []
+    for p in CONFIG.get("injection_patterns", []):
+        try:
+            INJECTION_RE.append(re.compile(p, re.IGNORECASE))
+        except re.error as e:
+            log.warning(f"Invalid injection pattern '{p}': {e}")
+    if INJECTION_RE:
+        log.info(f"  Injection patterns: {len(INJECTION_RE)} loaded")
+
+def check_injection_patterns(text, request_id="unknown"):
+    """Fast local check for known prompt injection signatures before Superwise API call."""
+    if not INJECTION_RE or not text:
+        return False, ""
+    for pattern in INJECTION_RE:
+        if pattern.search(text):
+            log_violation(
+                request_id, "input",
+                [{"guard": "InjectionPatternMatch", "message": f"Matched pattern: {pattern.pattern}"}],
+                ["PROMPT_INJECTION"],
+                text[:300]
+            )
+            return True, pattern.pattern
+    return False, ""
 
 def build_guards(direction):
     """Build guardrail list from config."""
@@ -143,17 +309,25 @@ def run_guardrail_check(text, direction, request_id="unknown"):
     if not text or not text.strip():
         return True, [], []
 
-    guards = build_guards(direction)
-    if not guards:
-        return True, [], []
-
     max_chars = CONFIG.get("max_check_chars", 2000)
     log.info(f"Checking {len(text)} chars [{direction}] request_id={request_id}")
 
     try:
-        sw      = get_sw_client()
-        tag     = direction
-        results = sw.guardrails.run_guardrules(tag=tag, guardrules=guards, query=text[:max_chars])
+        if direction in SW_GUARDRAIL_VERSION_IDS:
+            results = SW_CLIENT.guardrails.run_versions(
+                tag=direction,
+                ids=SW_GUARDRAIL_VERSION_IDS[direction],
+                query=text[:max_chars]
+            )
+        else:
+            guards = build_guards(direction)
+            if not guards:
+                return True, [], []
+            results = SW_CLIENT.guardrails.run_guardrules(
+                tag=direction,
+                guardrules=guards,
+                query=text[:max_chars]
+            )
 
         violations = [
             {"guard": r.name, "message": r.message}
@@ -190,16 +364,17 @@ def log_violation(request_id, direction, violations, flags, snippet):
     violation_log = CONFIG.get("violation_log", "sw_sentinel_violations.log")
 
     try:
-        with open(violation_log, "a") as f:
-            f.write(f"\n{'='*60}\n")
-            f.write(f"TIMESTAMP:  {timestamp}\n")
-            f.write(f"REQUEST_ID: {request_id}\n")
-            f.write(f"DIRECTION:  {direction.upper()}\n")
-            f.write(f"FLAGS:      {', '.join(flags)}\n")
-            f.write(f"SNIPPET:    {snippet}\n")
-            f.write(f"VIOLATIONS:\n")
-            for v in violations:
-                f.write(f"  [{v['guard']}] {v['message']}\n")
+        with _sw_lock:
+            with open(violation_log, "a") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"TIMESTAMP:  {timestamp}\n")
+                f.write(f"REQUEST_ID: {request_id}\n")
+                f.write(f"DIRECTION:  {direction.upper()}\n")
+                f.write(f"FLAGS:      {', '.join(flags)}\n")
+                f.write(f"SNIPPET:    {snippet}\n")
+                f.write(f"VIOLATIONS:\n")
+                for v in violations:
+                    f.write(f"  [{v['guard']}] {v['message']}\n")
         log.warning(f"BLOCKED [{direction.upper()}] request_id={request_id} flags={flags}")
     except Exception as e:
         log.error(f"Failed to write violation log: {e}")
@@ -211,35 +386,47 @@ def extract_input_text(body):
     skip_patterns = CONFIG.get("skip_patterns", [])
 
     try:
+        # skip_patterns apply only to the system prompt — never to user content
+        if skip_patterns:
+            system = body.get("system", "")
+            if isinstance(system, list):
+                system_text = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
+            else:
+                system_text = system or ""
+            if any(p in system_text for p in skip_patterns):
+                return ""
+
         messages = body.get("messages", [])
         for msg in reversed(messages):
             if msg.get("role") in ("user", "human"):
                 content = msg.get("content", "")
 
                 if isinstance(content, str):
-                    # Strip XML-like internal tags
-                    content = re.sub(r'<[^>]+>.*?</[^>]+>', '', content, flags=re.DOTALL)
                     content = content.strip()
-
-                    # Skip internal orchestration messages
-                    if any(p in content for p in skip_patterns):
-                        return ""
                     if content:
                         return content[:CONFIG.get("max_check_chars", 2000)]
 
                 elif isinstance(content, list):
                     texts = []
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
+                        if not isinstance(block, dict):
+                            if isinstance(block, str):
+                                texts.append(block)
+                            continue
+                        if block.get("type") == "text":
                             val = block.get("text", "")
                             if isinstance(val, str):
-                                val = re.sub(r'<[^>]+>.*?</[^>]+>', '', val, flags=re.DOTALL)
                                 texts.append(val.strip())
-                        elif isinstance(block, str):
-                            texts.append(block)
+                        elif block.get("type") == "tool_result":
+                            # Extract text from tool results — prompt injection blind spot
+                            tr = block.get("content", "")
+                            if isinstance(tr, str):
+                                texts.append(tr.strip())
+                            elif isinstance(tr, list):
+                                for tb in tr:
+                                    if isinstance(tb, dict) and tb.get("type") == "text":
+                                        texts.append(tb.get("text", "").strip())
                     result = " ".join(texts).strip()
-                    if any(p in result for p in skip_patterns):
-                        return ""
                     if result:
                         return result[:CONFIG.get("max_check_chars", 2000)]
     except Exception:
@@ -258,6 +445,25 @@ def extract_output_text(body):
         pass
     return " ".join(texts)[:CONFIG.get("max_check_chars", 2000)]
 
+def extract_streaming_text(raw_content):
+    """Extract text from Anthropic SSE streaming response for guardrail checking."""
+    text_parts = []
+    try:
+        for line in raw_content.decode("utf-8", errors="replace").splitlines():
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            try:
+                data = json.loads(line[6:])
+                if data.get("type") == "content_block_delta":
+                    delta = data.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text_parts.append(delta.get("text", ""))
+            except json.JSONDecodeError:
+                pass
+    except Exception:
+        pass
+    return "".join(text_parts)[:CONFIG.get("max_check_chars", 2000)]
+
 def make_blocked_response(request_body, message):
     """Construct a fake Anthropic API response for blocked requests."""
     return {
@@ -270,6 +476,11 @@ def make_blocked_response(request_body, message):
         "stop_sequence": None,
         "usage":        {"input_tokens": 0, "output_tokens": len(message.split())}
     }
+
+# ── Threaded HTTP server ───────────────────────────────────────────────────────
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True  # threads exit when main process exits
 
 # ── HTTP proxy handler ─────────────────────────────────────────────────────────
 
@@ -292,6 +503,14 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         input_text = extract_input_text(request_body)
 
         if input_text:
+            blocked, _ = check_injection_patterns(input_text, request_id)
+            if blocked:
+                msg = CONFIG.get("blocked_input_message",
+                    "This request has been blocked by compliance policy. "
+                    "The input content violated one or more security guardrails.")
+                self._send_json_response(200, make_blocked_response(request_body, msg))
+                return
+
             passed, violations, flags = run_guardrail_check(input_text, "input", request_id)
             if not passed:
                 msg = CONFIG.get("blocked_input_message",
@@ -321,12 +540,16 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
             return
 
         # ── OUTPUT CHECK ───────────────────────────────────────────────────────
-        try:
-            response_body = resp.json()
-        except Exception:
-            response_body = {}
+        is_streaming = request_body.get("stream", False)
 
-        output_text = extract_output_text(response_body)
+        if is_streaming:
+            output_text = extract_streaming_text(resp.content)
+        else:
+            try:
+                response_body = resp.json()
+            except Exception:
+                response_body = {}
+            output_text = extract_output_text(response_body)
 
         if output_text:
             passed, violations, flags = run_guardrail_check(output_text, "output", request_id)
@@ -394,9 +617,15 @@ def main():
     global CONFIG, log
 
     parser = argparse.ArgumentParser(description="SW-Sentinel — Superwise Guardrail Proxy for Anthropic API")
+    parser.add_argument("command", nargs="?", choices=["init"], help="init: run setup wizard and exit")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to sentinel_config.json")
     parser.add_argument("--port",   type=int, help="Override proxy port from config")
     args = parser.parse_args()
+
+    if args.command == "init":
+        run_init_wizard(args.config)
+        print("  Run 'sw-sentinel' to start the proxy.")
+        return
 
     CONFIG = load_config(args.config)
     log    = setup_logging(CONFIG)
@@ -429,17 +658,23 @@ def main():
     log.info(f"  export ANTHROPIC_BASE_URL=http://{host}:{port}")
     log.info(f"")
 
-    # Test Superwise connection
+    # Initialize Superwise client
     try:
-        get_sw_client()
+        init_sw_client()
         log.info(f"  Superwise connection: OK")
     except Exception as e:
         log.warning(f"  Superwise connection: FAILED ({e})")
 
+    # Create or retrieve persistent guardrails in Superwise dashboard
+    init_sw_guardrails()
+
+    # Pre-compile injection patterns
+    init_injection_patterns()
+
     log.info(f"{'='*55}")
     log.info(f"Proxy ready. Waiting for requests...")
 
-    server = HTTPServer((host, port), SentinelProxyHandler)
+    server = ThreadedHTTPServer((host, port), SentinelProxyHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
