@@ -658,11 +658,96 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def run_check(config_path):
+    """Self-diagnostic: verify ANTHROPIC_BASE_URL, proxy port, and reachability."""
+    sep   = "─" * 45
+    ok    = "✓"
+    fail  = "✗"
+    warn  = "!"
+    all_passed = True
+
+    print(f"\n  SW-Sentinel Health Check")
+    print(f"  {sep}")
+
+    # Load config to get host/port
+    try:
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                cfg = json.load(f)
+        elif os.environ.get("SUPERWISE_CLIENT_ID"):
+            cfg = _config_from_env()
+        else:
+            cfg = {}
+    except Exception:
+        cfg = {}
+
+    host  = cfg.get("proxy_host", "127.0.0.1")
+    port  = cfg.get("proxy_port", 8080)
+    token = cfg.get("proxy_token", "")
+
+    # 1. Check ANTHROPIC_BASE_URL
+    base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    expected = f"http://{host}:{port}"
+    if base_url == expected:
+        print(f"  ANTHROPIC_BASE_URL ... {base_url}  {ok}")
+    elif base_url:
+        print(f"  ANTHROPIC_BASE_URL ... {base_url}  {warn}  (expected {expected})")
+        all_passed = False
+    else:
+        print(f"  ANTHROPIC_BASE_URL ... (not set)  {fail}")
+        print(f"    → Run: export ANTHROPIC_BASE_URL={expected}")
+        all_passed = False
+
+    # 2. Check proxy port is listening
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        listening = s.connect_ex((host if host != "0.0.0.0" else "127.0.0.1", port)) == 0
+    if listening:
+        print(f"  Proxy listening    ... {host}:{port}  {ok}")
+    else:
+        print(f"  Proxy listening    ... {host}:{port}  {fail}")
+        print(f"    → Start the proxy: sw-sentinel")
+        all_passed = False
+
+    # 3. Check proxy reachability with a lightweight request
+    if listening:
+        try:
+            import time
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["X-Sentinel-Token"] = token
+            t0   = time.monotonic()
+            resp = requests.post(
+                f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/v1/messages",
+                headers=headers,
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+                      "messages": [{"role": "user", "content": "ping"}]},
+                timeout=5
+            )
+            ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code == 401:
+                print(f"  Proxy reachable    ... got 401  {fail}")
+                print(f"    → proxy_token is set — include X-Sentinel-Token header in your app")
+                all_passed = False
+            else:
+                print(f"  Proxy reachable    ... OK (responded in {ms}ms)  {ok}")
+        except Exception as e:
+            print(f"  Proxy reachable    ... FAILED ({e})  {fail}")
+            all_passed = False
+
+    print(f"  {sep}")
+    if all_passed:
+        print(f"  All checks passed. Your app is routing through SW-Sentinel.\n")
+    else:
+        print(f"  One or more checks failed. See suggestions above.\n")
+
+
 def main():
     global CONFIG, log
 
     parser = argparse.ArgumentParser(description="SW-Sentinel — Superwise Guardrail Proxy for Anthropic API")
-    parser.add_argument("command", nargs="?", choices=["init"], help="init: run setup wizard and exit")
+    parser.add_argument("command", nargs="?", choices=["init", "check"], help="init: run setup wizard | check: verify proxy is reachable from this terminal")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to sentinel_config.json")
     parser.add_argument("--port",   type=int, help="Override proxy port from config")
     args = parser.parse_args()
@@ -670,6 +755,10 @@ def main():
     if args.command == "init":
         run_init_wizard(args.config)
         print("  Run 'sw-sentinel' to start the proxy.")
+        return
+
+    if args.command == "check":
+        run_check(args.config)
         return
 
     CONFIG = load_config(args.config)

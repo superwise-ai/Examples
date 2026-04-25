@@ -190,6 +190,11 @@ claude  # all traffic now routes through SW-Sentinel
 
 **Streaming requests** (e.g. `stream=True`) are fully supported. The proxy accumulates the streamed response text and checks it before passing the stream back to your app.
 
+**Verify everything is wired up correctly** by running this in the same terminal as your app:
+```bash
+sw-sentinel check
+```
+
 ---
 
 ## Running with Docker
@@ -605,8 +610,21 @@ sudo systemctl start sw-sentinel
 → Run the suggested `kill <pid>` command, then start the proxy again
 
 **App traffic is not going through the proxy**
-→ Confirm `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` is set in the same terminal/process as your app
-→ Confirm the proxy is listening: `ss -tlnp | grep 8080`
+→ Run the built-in health check from the same terminal where you run your app:
+```bash
+sw-sentinel check
+```
+This checks whether `ANTHROPIC_BASE_URL` is set correctly, the proxy port is listening, and the proxy responds — with fix hints for each failure:
+```
+  SW-Sentinel Health Check
+  ─────────────────────────────────────────────
+  ANTHROPIC_BASE_URL ... (not set)  ✗
+    → Run: export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+  Proxy listening    ... 127.0.0.1:8080  ✓
+  Proxy reachable    ... OK (responded in 12ms)  ✓
+  ─────────────────────────────────────────────
+  One or more checks failed. See suggestions above.
+```
 
 **Nothing appears in Superwise dashboard**
 → Confirm the proxy started without errors (look for `Superwise connection: OK` in startup output)
