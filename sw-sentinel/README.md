@@ -3,6 +3,8 @@
 
 SW-Sentinel is a lightweight HTTP proxy that sits between your app and `api.anthropic.com`. Every LLM call is automatically intercepted and run through **Superwise guardrail checks** before being forwarded — without any changes to your application code.
 
+**Built for API-first teams:** SW-Sentinel is designed for applications and workflows that call Claude via the Anthropic API using an API key (`sk-ant-...`). If your team is building on Claude — internal tools, automations, agentic workflows — you're in the right place. Note that Claude.ai subscription traffic (browser-based sessions) runs outside the API layer, so SW-Sentinel isn't needed there — those sessions don't expose the kind of programmatic data flows that require guardrail protection.
+
 ---
 
 ## What Does It Do?
