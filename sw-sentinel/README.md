@@ -64,7 +64,7 @@ PII and jailbreak checks are powered by the **Superwise** platform. Prompt injec
 ### Option A — pip install (recommended)
 
 ```bash
-pip install .
+pip install git+https://github.com/superwise-ai/Examples.git#subdirectory=sw-sentinel
 ```
 
 This installs the `sw-sentinel` command globally. Then run the setup wizard:
@@ -122,6 +122,37 @@ Proxy ready. Waiting for requests...
 
 ---
 
+## Stopping and Restarting the Proxy
+
+How you stop and restart depends on how the proxy is running:
+
+**Foreground (terminal):**
+```bash
+# Stop
+Ctrl+C
+
+# Start again
+sw-sentinel
+```
+
+**systemd service:**
+```bash
+sudo systemctl restart sw-sentinel
+
+# Or to stop/start separately:
+sudo systemctl stop sw-sentinel
+sudo systemctl start sw-sentinel
+```
+
+**Docker:**
+```bash
+docker restart <container_name>
+```
+
+> A restart is required any time you publish updated guardrails in the Superwise UI — the proxy reads the current guardrail version once at startup.
+
+---
+
 ## Connecting Your App
 
 Set one environment variable — that's all your app needs:
@@ -170,7 +201,7 @@ SW-Sentinel includes a `Dockerfile` for containerized deployments.
 docker build -t sw-sentinel .
 ```
 
-**Run with environment variables:**
+**Run in the foreground (useful for testing):**
 ```bash
 docker run -p 8080:8080 \
   -e SUPERWISE_CLIENT_ID=your_client_id \
@@ -179,11 +210,60 @@ docker run -p 8080:8080 \
   sw-sentinel
 ```
 
-**Run with a config file:**
+**Run in the background (recommended for production):**
 ```bash
-docker run -p 8080:8080 \
+docker run -d --name sw-sentinel -p 8080:8080 \
+  -e SUPERWISE_CLIENT_ID=your_client_id \
+  -e SUPERWISE_CLIENT_SECRET=your_client_secret \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  sw-sentinel
+```
+
+The `-d` flag runs the container in detached (background) mode. `--name sw-sentinel` gives it a name so it's easy to reference in later commands.
+
+**Run with a config file instead of environment variables:**
+```bash
+docker run -d --name sw-sentinel -p 8080:8080 \
   -v /path/to/sentinel_config.json:/app/sentinel_config.json \
   sw-sentinel
+```
+
+**Confirm it started correctly:**
+```bash
+docker logs sw-sentinel
+```
+
+You should see the startup banner:
+```
+=======================================================
+  SW-Sentinel — Superwise Guardrail Proxy
+  v1.0.0
+=======================================================
+  Proxy:         0.0.0.0:8080
+  Forwarding to: https://api.anthropic.com
+  Violation log: sw_sentinel_violations.log
+=======================================================
+Proxy ready. Waiting for requests...
+```
+
+**Connect your app:**
+
+When SW-Sentinel is running in Docker, point your app at the Docker host instead of `127.0.0.1`:
+```bash
+# If your app is running on the same machine as Docker:
+export ANTHROPIC_BASE_URL=http://localhost:8080
+
+# If your app is on a different machine:
+export ANTHROPIC_BASE_URL=http://<docker-host-ip>:8080
+```
+
+**Stop and restart the container:**
+```bash
+docker stop sw-sentinel
+docker start sw-sentinel
+
+# Or restart in one command:
+docker restart sw-sentinel
 ```
 
 ### Environment Variable Reference (Docker / CI)
@@ -223,7 +303,22 @@ docker run -p 8080:8080 \
 
 ## Guardrail Configuration
 
-Each guardrail can be enabled/disabled and tuned independently for input and output:
+### How guardrails are created and used
+
+On first startup, SW-Sentinel automatically creates two persistent guardrail objects in your Superwise tenant:
+
+- **SW-Sentinel Input** — checks text sent to the LLM
+- **SW-Sentinel Output** — checks responses returned from the LLM
+
+These are built from the `guardrails` block in `sentinel_config.json` and registered in your Superwise account via the SDK. Once created, they appear under **Guardrails** in the Superwise UI and all check results are logged to your dashboard.
+
+On every subsequent startup, the proxy looks up these two guardrails by name, retrieves the current version, and uses that for all checks. **The `guardrails` block in `sentinel_config.json` is only read once — at initial creation.** After that, your Superwise tenant is the source of truth.
+
+> To modify guardrails after initial setup, log into your tenant at https://app.superwise.ai → Guardrails, edit `SW-Sentinel Input` or `SW-Sentinel Output`, publish the new version, and restart the proxy.
+
+### Initial configuration (`sentinel_config.json`)
+
+The `guardrails` block controls what gets created on first run. Each check can be enabled/disabled and tuned independently for input and output:
 
 ```json
 "guardrails": {
