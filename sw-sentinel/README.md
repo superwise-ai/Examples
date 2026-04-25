@@ -288,7 +288,9 @@ docker restart sw-sentinel
 | `proxy_port` | `8080` | Port to listen on |
 | `anthropic_api_base` | `https://api.anthropic.com` | Upstream Anthropic API to forward to |
 | `anthropic_api_key` | `""` | Optional. Injects your API key into forwarded requests |
+| `proxy_token` | `""` | Optional shared secret. If set, clients must send `X-Sentinel-Token: <token>` header. Recommended when `proxy_host` is `0.0.0.0` |
 | `upstream_timeout_seconds` | `120` | How long to wait for Anthropic to respond |
+| `max_request_bytes` | `10MB` | Requests larger than 10MB are rejected with HTTP 413 |
 | `on_superwise_error` | `fail_open` | `fail_open` = allow if Superwise unreachable; `fail_closed` = block |
 | `max_check_chars` | `2000` | Max characters of text sent to Superwise per check |
 | `log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
@@ -438,10 +440,55 @@ If you enable it, use `skip_patterns` to whitelist known-safe messages:
 
 ---
 
+## Proxy Token Authentication
+
+When `proxy_token` is set in your config, every client request must include it as a header:
+
+```bash
+X-Sentinel-Token: your-token-here
+```
+
+Requests without the correct token are rejected with HTTP 401 before any guardrail check runs.
+
+**The `sw-sentinel init` wizard generates a strong random token automatically** and displays it at the end of setup. Copy it and add it to your app's headers.
+
+**Example — curl:**
+```bash
+curl -X POST http://localhost:8080/v1/messages \
+  -H "X-Sentinel-Token: your-token-here" \
+  -H "Content-Type: application/json" \
+  ...
+```
+
+**Example — Python SDK:**
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080",
+    default_headers={"X-Sentinel-Token": "your-token-here"}
+)
+```
+
+**Example — Docker with token:**
+```bash
+docker run -d --name sw-sentinel -p 8080:8080 \
+  -e SUPERWISE_CLIENT_ID=your_id \
+  -e SUPERWISE_CLIENT_SECRET=your_secret \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e PROXY_TOKEN=your-token-here \
+  sw-sentinel
+```
+
+> `proxy_token` is optional when running on `127.0.0.1` (local only). It is strongly recommended when `proxy_host` is `0.0.0.0`.
+
+---
+
 ## Violation Logs
 
-All blocked requests are written to `sw_sentinel_violations.log`:
+All blocked requests and security events are written to `sw_sentinel_violations.log`.
 
+**Guardrail violation:**
 ```
 ============================================================
 TIMESTAMP:  2026-04-15T19:47:44Z
@@ -453,11 +500,22 @@ VIOLATIONS:
   [Sentinel Input PII] Message contains restricted personal information
 ```
 
+**Unauthorized access attempt (wrong or missing token):**
+```
+============================================================
+TIMESTAMP:  2026-04-15T19:52:11Z
+EVENT:      UNAUTHORIZED_REQUEST
+CLIENT_IP:  192.168.1.42
+REQUEST:    POST /v1/messages
+```
+
 The log captures:
-- Timestamp and unique request ID
-- Whether the violation was in the input or output
-- Which guardrail triggered and why
+- Timestamp and unique request ID for guardrail violations
+- Client IP, method, and path for unauthorized access attempts
+- Which guardrail triggered and why for blocked content
 - A snippet of the text that triggered the violation
+
+Unauthorized attempts also produce a `[WARNING]` line in `sw_sentinel.log` so they're visible in the main activity log.
 
 ---
 
@@ -508,8 +566,9 @@ sudo systemctl start sw-sentinel
 ## Security Considerations
 
 - SW-Sentinel binds to `127.0.0.1` by default — only accessible from the local machine
-- Do **not** set `proxy_host` to `0.0.0.0` unless you have firewall rules in place
-- `sentinel_config.json` contains your credentials — restrict access: `chmod 600 sentinel_config.json`
+- If you set `proxy_host` to `0.0.0.0` (e.g. Docker), set a `proxy_token` in your config — clients must then send `X-Sentinel-Token: <token>` with every request, preventing unauthorized use of your Anthropic API key
+- The `sw-sentinel init` wizard automatically generates a strong random token and displays it after setup
+- `sentinel_config.json` is written with owner-only permissions (`600`) by the wizard — do not loosen these
 - The violation log may contain snippets of sensitive content — protect it accordingly
 - `fail_open` is the default for availability; switch to `fail_closed` for strict compliance environments
 
@@ -519,6 +578,10 @@ sudo systemctl start sw-sentinel
 
 **"Config file not found"**
 → Run `sw-sentinel init` to create one, or copy `sentinel_config.json.example` to `sentinel_config.json`
+
+**HTTP 401 Unauthorized errors**
+→ Your proxy has `proxy_token` set — clients must include `X-Sentinel-Token: <token>` in every request
+→ Check `sentinel_config.json` for the token value, or run `sw-sentinel init` to generate a new one
 
 **"superwise_client_id not set"**
 → Edit `sentinel_config.json` and add your credentials from https://app.superwise.ai → Settings → API Tokens
@@ -532,6 +595,14 @@ sudo systemctl start sw-sentinel
 → Reduce `max_check_chars` if sending very large payloads
 → Check your Superwise plan limits at https://app.superwise.ai
 → Test connectivity: `python3 -c "from superwise_api.superwise_client import SuperwiseClient; SuperwiseClient()"`
+
+**"Port 8080 is already in use"**
+→ Another SW-Sentinel instance is already running. The error message will show the PID to kill:
+```
+[ERROR] Port 8080 is already in use — another SW-Sentinel instance may be running.
+[ERROR]   To stop it, run:  kill 47525
+```
+→ Run the suggested `kill <pid>` command, then start the proxy again
 
 **App traffic is not going through the proxy**
 → Confirm `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` is set in the same terminal/process as your app

@@ -4,10 +4,13 @@ sentinel_config.json
 # Runtime logs
 *.log
 
-# Python cache
+# Python cache and build artifacts
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
 
 # OS / editor noise
 .DS_Store

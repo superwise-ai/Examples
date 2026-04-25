@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import re
+import secrets
 import logging
 import argparse
 import threading
@@ -53,6 +54,7 @@ def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1",
         "proxy_port":               port,
         "anthropic_api_base":       "https://api.anthropic.com",
         "anthropic_api_key":        api_key,
+        "proxy_token":              "",
         "upstream_timeout_seconds": 120,
         "on_superwise_error":       "fail_open",
         "max_check_chars":          2000,
@@ -122,12 +124,18 @@ def run_init_wizard(config_path):
     port = int(port_raw) if port_raw.isdigit() else 8080
 
     config = _default_config_body(client_id, client_secret, api_key, port=port)
+    proxy_token = secrets.token_urlsafe(32)
+    config["proxy_token"] = proxy_token
 
-    with open(config_path, "w") as f:
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(config, f, indent=2)
 
     print(f"\n  {sep}")
     print(f"  Config saved → {config_path}")
+    print(f"")
+    print(f"  Proxy token (add to your app as X-Sentinel-Token header):")
+    print(f"  {proxy_token}")
     print(f"  {sep}\n")
     return config
 
@@ -489,9 +497,43 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress default HTTP server logging
 
+    def _check_proxy_token(self):
+        """Return True if proxy_token auth passes (or is not configured)."""
+        required = CONFIG.get("proxy_token", "")
+        if not required:
+            return True
+        return secrets.compare_digest(
+            self.headers.get("X-Sentinel-Token", ""), required
+        )
+
+    def _reject_unauthorized(self):
+        """Log and return 401 for requests with missing or invalid token."""
+        client_ip = self.client_address[0]
+        log.warning(f"UNAUTHORIZED request from {client_ip} — invalid X-Sentinel-Token [{self.command} {self.path}]")
+        violation_log = CONFIG.get("violation_log", "sw_sentinel_violations.log")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            with _sw_lock:
+                with open(violation_log, "a") as f:
+                    f.write(f"\n{'='*60}\n")
+                    f.write(f"TIMESTAMP:  {timestamp}\n")
+                    f.write(f"EVENT:      UNAUTHORIZED_REQUEST\n")
+                    f.write(f"CLIENT_IP:  {client_ip}\n")
+                    f.write(f"REQUEST:    {self.command} {self.path}\n")
+        except Exception as e:
+            log.error(f"Failed to write violation log: {e}")
+        self._send_error(401, "Unauthorized: missing or invalid X-Sentinel-Token")
+
     def do_POST(self):
+        if not self._check_proxy_token():
+            self._reject_unauthorized()
+            return
+
         request_id     = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > 10 * 1024 * 1024:  # 10 MB hard limit
+            self._send_error(413, "Request body too large")
+            return
         raw_body       = self.rfile.read(content_length) if content_length else b""
 
         try:
@@ -564,6 +606,9 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         self._send_raw_response(resp.status_code, resp.headers, resp.content)
 
     def do_GET(self):
+        if not self._check_proxy_token():
+            self._reject_unauthorized()
+            return
         anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
         target_url     = f"{anthropic_base}{self.path}"
         try:
@@ -674,7 +719,23 @@ def main():
     log.info(f"{'='*55}")
     log.info(f"Proxy ready. Waiting for requests...")
 
-    server = ThreadedHTTPServer((host, port), SentinelProxyHandler)
+    try:
+        server = ThreadedHTTPServer((host, port), SentinelProxyHandler)
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            import subprocess
+            result = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True
+            )
+            pids = result.stdout.strip()
+            log.error(f"Port {port} is already in use — another SW-Sentinel instance may be running.")
+            if pids:
+                log.error(f"  To stop it, run:  kill {pids}")
+            else:
+                log.error(f"  Run 'ss -tlnp | grep {port}' to find the process using the port.")
+            sys.exit(1)
+        raise
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
