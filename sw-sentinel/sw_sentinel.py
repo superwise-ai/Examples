@@ -1,35 +1,36 @@
 #!/usr/bin/env python3
 """
-SW-Sentinel — Superwise Guardrail Proxy for Anthropic API
-==========================================================
-A lightweight HTTP proxy that sits between any Anthropic API client
-and api.anthropic.com. Every LLM call is intercepted and run through
-Superwise guardrail checks before being forwarded.
+SW-Sentinel — Superwise Guardrail Proxy for LLM APIs
+=====================================================
+A lightweight HTTP proxy that sits between any LLM API client and its
+upstream provider. Every call is intercepted and run through Superwise
+guardrail checks before being forwarded.
 
-Works with any tool that uses the Anthropic API:
-  - Claude Code / Paperclip
-  - Python apps using the anthropic SDK
-  - LangChain, LlamaIndex, or any Anthropic-compatible framework
+Supported providers (auto-detected from request path):
+  - Anthropic  POST /v1/messages          → api.anthropic.com
+  - OpenAI     POST /v1/chat/completions  → api.openai.com
 
-Setup (any app):
-  1. Run: python3 sw_sentinel.py
-  2. Set: export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+Works with any tool that uses these APIs:
+  - Claude Code / Paperclip (Anthropic)
+  - Python apps using the anthropic or openai SDK
+  - LangChain, LlamaIndex, or any compatible framework
+
+Setup:
+  1. Run: sw-sentinel
+  2. Point your app at the proxy:
+       Anthropic: export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+       OpenAI:    export OPENAI_BASE_URL=http://127.0.0.1:8080
   3. Your app now routes through SW-Sentinel automatically
 
 Configuration:
   Edit sentinel_config.json to customize guardrails, port, and behavior.
-  See sentinel_config.json for all available options.
-
-Usage:
-  python3 sw_sentinel.py
-  python3 sw_sentinel.py --config /path/to/sentinel_config.json
-  python3 sw_sentinel.py --port 9090
 """
 
 import os
 import sys
 import json
 import re
+import time
 import secrets
 import logging
 import argparse
@@ -43,6 +44,47 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sentinel_config.json")
 
+# ── Provider routing table ─────────────────────────────────────────────────────
+
+PROVIDERS = {
+    "/v1/messages": {
+        "name":                "Anthropic",
+        "api_base_cfg":        "anthropic_api_base",
+        "api_base_default":    "https://api.anthropic.com",
+        "api_key_cfg":         "anthropic_api_key",
+        "api_key_env":         "ANTHROPIC_API_KEY",
+        "passthrough_headers": {
+            "content-type", "anthropic-version", "anthropic-beta",
+            "x-api-key", "authorization"
+        },
+    },
+    "/v1/chat/completions": {
+        "name":                "OpenAI",
+        "api_base_cfg":        "openai_api_base",
+        "api_base_default":    "https://api.openai.com",
+        "api_key_cfg":         "openai_api_key",
+        "api_key_env":         "OPENAI_API_KEY",
+        "passthrough_headers": {
+            "content-type", "authorization",
+            "openai-organization", "openai-project"
+        },
+    },
+    "/openai/v1/chat/completions": {
+        "name":                "Groq",
+        "api_base_cfg":        "groq_api_base",
+        "api_base_default":    "https://api.groq.com",
+        "api_key_cfg":         "groq_api_key",
+        "api_key_env":         "GROQ_API_KEY",
+        "passthrough_headers": {
+            "content-type", "authorization"
+        },
+    },
+}
+
+def detect_provider(path):
+    """Return provider dict for the given request path, defaulting to Anthropic."""
+    return PROVIDERS.get(path.split("?")[0], PROVIDERS["/v1/messages"])
+
 # ── Load configuration ─────────────────────────────────────────────────────────
 
 def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1", port=8080):
@@ -54,6 +96,10 @@ def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1",
         "proxy_port":               port,
         "anthropic_api_base":       "https://api.anthropic.com",
         "anthropic_api_key":        api_key,
+        "openai_api_base":          "https://api.openai.com",
+        "openai_api_key":           "",
+        "groq_api_base":            "https://api.groq.com",
+        "groq_api_key":             "",
         "proxy_token":              "",
         "upstream_timeout_seconds": 120,
         "on_superwise_error":       "fail_open",
@@ -165,19 +211,19 @@ def load_config(config_path):
 
 # ── Globals (populated after config load) ─────────────────────────────────────
 
-CONFIG                  = {}
-SW_CLIENT               = None
+CONFIG                   = {}
+SW_CLIENT                = None
 SW_GUARDRAIL_VERSION_IDS = {}   # direction -> set of version UUIDs for run_versions()
-INJECTION_RE            = []
-log                     = None
-_sw_lock                = threading.Lock()
+INJECTION_RE             = []
+log                      = None
+_sw_lock                 = threading.Lock()
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 
 def setup_logging(config):
-    log_level   = getattr(logging, config.get("log_level", "INFO").upper(), logging.INFO)
-    log_file    = config.get("log_file", "sw_sentinel.log")
-    handlers    = [logging.StreamHandler(sys.stdout)]
+    log_level = getattr(logging, config.get("log_level", "INFO").upper(), logging.INFO)
+    log_file  = config.get("log_file", "sw_sentinel.log")
+    handlers  = [logging.StreamHandler(sys.stdout)]
 
     if log_file:
         handlers.append(logging.FileHandler(log_file))
@@ -252,7 +298,7 @@ def init_injection_patterns():
     if INJECTION_RE:
         log.info(f"  Injection patterns: {len(INJECTION_RE)} loaded")
 
-def check_injection_patterns(text, request_id="unknown"):
+def check_injection_patterns(text, request_id="unknown", provider_name="unknown"):
     """Fast local check for known prompt injection signatures before Superwise API call."""
     if not INJECTION_RE or not text:
         return False, ""
@@ -262,7 +308,8 @@ def check_injection_patterns(text, request_id="unknown"):
                 request_id, "input",
                 [{"guard": "InjectionPatternMatch", "message": f"Matched pattern: {pattern.pattern}"}],
                 ["PROMPT_INJECTION"],
-                text[:300]
+                text[:300],
+                provider_name
             )
             return True, pattern.pattern
     return False, ""
@@ -340,7 +387,7 @@ def build_guards(direction):
 
 # ── Guardrail check ────────────────────────────────────────────────────────────
 
-def run_guardrail_check(text, direction, request_id="unknown"):
+def run_guardrail_check(text, direction, request_id="unknown", provider_name="unknown"):
     """
     Run Superwise guardrail checks on text.
     Returns (passed: bool, violations: list, flags: list)
@@ -350,7 +397,7 @@ def run_guardrail_check(text, direction, request_id="unknown"):
         return True, [], []
 
     max_chars = CONFIG.get("max_check_chars", 2000)
-    log.info(f"Checking {len(text)} chars [{direction}] request_id={request_id}")
+    log.info(f"[{provider_name}] Checking {len(text)} chars [{direction}] request_id={request_id}")
 
     try:
         if direction in SW_GUARDRAIL_VERSION_IDS:
@@ -384,23 +431,23 @@ def run_guardrail_check(text, direction, request_id="unknown"):
                 elif "Toxicity" in v["guard"]:
                     flags.append("TOXIC")
 
-            log_violation(request_id, direction, violations, flags, text[:300])
+            log_violation(request_id, direction, violations, flags, text[:300], provider_name)
             return False, violations, flags
 
         return True, [], []
 
     except Exception as e:
         fail_behavior = CONFIG.get("on_superwise_error", "fail_open")
-        log.error(f"Superwise error: {e} — {fail_behavior}")
+        log.error(f"[{provider_name}] Superwise error: {e} — {fail_behavior}")
         if fail_behavior == "fail_closed":
             return False, [{"guard": "ERROR", "message": str(e)}], ["SW_ERROR"]
         return True, [], []  # fail_open — allow request through
 
 # ── Violation logging ──────────────────────────────────────────────────────────
 
-def log_violation(request_id, direction, violations, flags, snippet):
+def log_violation(request_id, direction, violations, flags, snippet, provider_name="unknown"):
     """Write violation to local audit log."""
-    timestamp    = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp     = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     violation_log = CONFIG.get("violation_log", "sw_sentinel_violations.log")
 
     try:
@@ -409,30 +456,41 @@ def log_violation(request_id, direction, violations, flags, snippet):
                 f.write(f"\n{'='*60}\n")
                 f.write(f"TIMESTAMP:  {timestamp}\n")
                 f.write(f"REQUEST_ID: {request_id}\n")
+                f.write(f"PROVIDER:   {provider_name}\n")
                 f.write(f"DIRECTION:  {direction.upper()}\n")
                 f.write(f"FLAGS:      {', '.join(flags)}\n")
                 f.write(f"SNIPPET:    {snippet}\n")
                 f.write(f"VIOLATIONS:\n")
                 for v in violations:
                     f.write(f"  [{v['guard']}] {v['message']}\n")
-        log.warning(f"BLOCKED [{direction.upper()}] request_id={request_id} flags={flags}")
+        log.warning(f"VIOLATION [{provider_name}] [{direction.upper()}] request_id={request_id} flags={flags}")
     except Exception as e:
         log.error(f"Failed to write violation log: {e}")
 
 # ── Text extraction ────────────────────────────────────────────────────────────
 
-def extract_input_text(body):
+def extract_input_text(body, provider_name="Anthropic"):
     """Extract the most recent user message for guardrail checking."""
     skip_patterns = CONFIG.get("skip_patterns", [])
 
     try:
-        # skip_patterns apply only to the system prompt — never to user content
         if skip_patterns:
-            system = body.get("system", "")
-            if isinstance(system, list):
-                system_text = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
+            if provider_name == "OpenAI":
+                # OpenAI: system prompt is a message with role "system"
+                parts = []
+                for m in body.get("messages", []):
+                    if m.get("role") == "system":
+                        c = m.get("content", "")
+                        parts.append(c if isinstance(c, str) else
+                                     " ".join(b.get("text", "") for b in c if isinstance(b, dict)))
+                system_text = " ".join(parts)
             else:
-                system_text = system or ""
+                # Anthropic: system is a top-level field
+                system = body.get("system", "")
+                if isinstance(system, list):
+                    system_text = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
+                else:
+                    system_text = system or ""
             if any(p in system_text for p in skip_patterns):
                 return ""
 
@@ -458,7 +516,7 @@ def extract_input_text(body):
                             if isinstance(val, str):
                                 texts.append(val.strip())
                         elif block.get("type") == "tool_result":
-                            # Extract text from tool results — prompt injection blind spot
+                            # Anthropic tool results — prompt injection blind spot
                             tr = block.get("content", "")
                             if isinstance(tr, str):
                                 texts.append(tr.strip())
@@ -473,20 +531,26 @@ def extract_input_text(body):
         pass
     return ""
 
-def extract_output_text(body):
+def extract_output_text(body, provider_name="Anthropic"):
     """Extract assistant response text for guardrail checking."""
-    texts = []
     try:
-        content = body.get("content", [])
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                texts.append(block.get("text", ""))
+        if provider_name == "OpenAI":
+            choices = body.get("choices", [])
+            if choices:
+                content = choices[0].get("message", {}).get("content", "") or ""
+                return content[:CONFIG.get("max_check_chars", 2000)]
+        else:
+            texts = []
+            for block in body.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+            return " ".join(texts)[:CONFIG.get("max_check_chars", 2000)]
     except Exception:
         pass
-    return " ".join(texts)[:CONFIG.get("max_check_chars", 2000)]
+    return ""
 
-def extract_streaming_text(raw_content):
-    """Extract text from Anthropic SSE streaming response for guardrail checking."""
+def extract_streaming_text(raw_content, provider_name="Anthropic"):
+    """Extract text from SSE streaming response for guardrail checking."""
     text_parts = []
     try:
         for line in raw_content.decode("utf-8", errors="replace").splitlines():
@@ -494,28 +558,52 @@ def extract_streaming_text(raw_content):
                 continue
             try:
                 data = json.loads(line[6:])
-                if data.get("type") == "content_block_delta":
-                    delta = data.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        text_parts.append(delta.get("text", ""))
+                if provider_name == "OpenAI":
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta_content = choices[0].get("delta", {}).get("content", "")
+                        if delta_content:
+                            text_parts.append(delta_content)
+                else:
+                    if data.get("type") == "content_block_delta":
+                        delta = data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text_parts.append(delta.get("text", ""))
             except json.JSONDecodeError:
                 pass
     except Exception:
         pass
     return "".join(text_parts)[:CONFIG.get("max_check_chars", 2000)]
 
-def make_blocked_response(request_body, message):
-    """Construct a fake Anthropic API response for blocked requests."""
-    return {
-        "id":           f"sentinel_blocked_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-        "type":         "message",
-        "role":         "assistant",
-        "model":        request_body.get("model", "claude-sonnet-4-6"),
-        "content":      [{"type": "text", "text": message}],
-        "stop_reason":  "end_turn",
-        "stop_sequence": None,
-        "usage":        {"input_tokens": 0, "output_tokens": len(message.split())}
-    }
+def make_blocked_response(request_body, message, provider_name="Anthropic"):
+    """Construct a provider-appropriate blocked response body."""
+    ts    = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    model = request_body.get("model", "unknown")
+
+    if provider_name == "OpenAI":
+        return {
+            "id":      f"sentinel_blocked_{ts}",
+            "object":  "chat.completion",
+            "created": int(time.time()),
+            "model":   model,
+            "choices": [{
+                "index":         0,
+                "message":       {"role": "assistant", "content": message},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
+    else:
+        return {
+            "id":            f"sentinel_blocked_{ts}",
+            "type":          "message",
+            "role":          "assistant",
+            "model":         model if model != "unknown" else "claude-sonnet-4-6",
+            "content":       [{"type": "text", "text": message}],
+            "stop_reason":   "end_turn",
+            "stop_sequence": None,
+            "usage":         {"input_tokens": 0, "output_tokens": len(message.split())}
+        }
 
 # ── Threaded HTTP server ───────────────────────────────────────────────────────
 
@@ -561,55 +649,57 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
             self._reject_unauthorized()
             return
 
-        request_id     = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        provider      = detect_provider(self.path)
+        provider_name = provider["name"]
+        request_id    = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length > 10 * 1024 * 1024:  # 10 MB hard limit
             self._send_error(413, "Request body too large")
             return
-        raw_body       = self.rfile.read(content_length) if content_length else b""
+        raw_body = self.rfile.read(content_length) if content_length else b""
 
         try:
             request_body = json.loads(raw_body) if raw_body else {}
         except json.JSONDecodeError:
             request_body = {}
 
+        model = request_body.get("model", "unknown")
+
         # ── INPUT CHECK ────────────────────────────────────────────────────────
-        input_text = extract_input_text(request_body)
+        input_text = extract_input_text(request_body, provider_name)
 
         if input_text:
-            blocked, _ = check_injection_patterns(input_text, request_id)
+            blocked, _ = check_injection_patterns(input_text, request_id, provider_name)
             if blocked:
                 msg = CONFIG.get("blocked_input_message",
-                    "This request has been blocked by compliance policy. "
-                    "The input content violated one or more security guardrails.")
-                self._send_json_response(200, make_blocked_response(request_body, msg))
+                    "This request has been blocked by compliance policy.")
+                self._send_json_response(200, make_blocked_response(request_body, msg, provider_name))
                 return
 
-            passed, violations, flags = run_guardrail_check(input_text, "input", request_id)
+            passed, violations, flags = run_guardrail_check(input_text, "input", request_id, provider_name)
             if not passed:
                 msg = CONFIG.get("blocked_input_message",
-                    "This request has been blocked by compliance policy. "
-                    "The input content violated one or more security guardrails.")
-                self._send_json_response(200, make_blocked_response(request_body, msg))
+                    "This request has been blocked by compliance policy.")
+                self._send_json_response(200, make_blocked_response(request_body, msg, provider_name))
                 return
 
-        # ── FORWARD TO ANTHROPIC ───────────────────────────────────────────────
-        anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
-        target_url     = f"{anthropic_base}{self.path}"
-        fwd_headers    = self._build_forward_headers()
+        # ── FORWARD TO UPSTREAM ────────────────────────────────────────────────
+        api_base   = CONFIG.get(provider["api_base_cfg"], provider["api_base_default"])
+        target_url = f"{api_base}{self.path}"
 
-        log.info(f"Forwarding {self.path} → Anthropic (request_id={request_id})")
+        log.info(f"[{provider_name}] {self.path} → {api_base}  model={model}  ({len(input_text)} chars checked)")
 
         try:
             resp = requests.post(
                 target_url,
-                headers=fwd_headers,
+                headers=self._build_forward_headers(provider),
                 data=raw_body,
                 timeout=CONFIG.get("upstream_timeout_seconds", 120),
                 stream=False
             )
         except requests.RequestException as e:
-            log.error(f"Upstream request failed: {e}")
+            log.error(f"[{provider_name}] Upstream request failed: {e}")
             self._send_error(502, f"Upstream error: {e}")
             return
 
@@ -617,21 +707,20 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         is_streaming = request_body.get("stream", False)
 
         if is_streaming:
-            output_text = extract_streaming_text(resp.content)
+            output_text = extract_streaming_text(resp.content, provider_name)
         else:
             try:
                 response_body = resp.json()
             except Exception:
                 response_body = {}
-            output_text = extract_output_text(response_body)
+            output_text = extract_output_text(response_body, provider_name)
 
         if output_text:
-            passed, violations, flags = run_guardrail_check(output_text, "output", request_id)
+            passed, violations, flags = run_guardrail_check(output_text, "output", request_id, provider_name)
             if not passed:
                 msg = CONFIG.get("blocked_output_message",
-                    "The model response has been blocked by compliance policy. "
-                    "The generated content contained sensitive information that cannot be returned.")
-                self._send_json_response(200, make_blocked_response(request_body, msg))
+                    "The model response has been blocked by compliance policy.")
+                self._send_json_response(200, make_blocked_response(request_body, msg, provider_name))
                 return
 
         # ── PASS THROUGH CLEAN RESPONSE ────────────────────────────────────────
@@ -641,24 +730,29 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         if not self._check_proxy_token():
             self._reject_unauthorized()
             return
-        anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
-        target_url     = f"{anthropic_base}{self.path}"
+        provider   = detect_provider(self.path)
+        api_base   = CONFIG.get(provider["api_base_cfg"], provider["api_base_default"])
+        target_url = f"{api_base}{self.path}"
         try:
-            resp = requests.get(target_url, headers=self._build_forward_headers(), timeout=30)
+            resp = requests.get(target_url, headers=self._build_forward_headers(provider), timeout=30)
             self._send_raw_response(resp.status_code, resp.headers, resp.content)
         except Exception as e:
             self._send_error(502, str(e))
 
-    def _build_forward_headers(self):
-        headers     = {}
-        passthrough = {"content-type", "anthropic-version", "anthropic-beta", "x-api-key", "authorization"}
+    def _build_forward_headers(self, provider):
+        headers = {}
         for key, val in self.headers.items():
-            if key.lower() in passthrough:
+            if key.lower() in provider["passthrough_headers"]:
                 headers[key] = val
-        # Inject API key if configured and not already present
-        api_key = CONFIG.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key and "x-api-key" not in {k.lower() for k in headers}:
-            headers["x-api-key"] = api_key
+        # Inject API key from config/env if client didn't send one
+        api_key = CONFIG.get(provider["api_key_cfg"]) or os.environ.get(provider["api_key_env"], "")
+        if api_key:
+            if provider["name"] == "OpenAI":
+                if "authorization" not in {k.lower() for k in headers}:
+                    headers["Authorization"] = f"Bearer {api_key}"
+            else:
+                if "x-api-key" not in {k.lower() for k in headers}:
+                    headers["x-api-key"] = api_key
         return headers
 
     def _send_json_response(self, status_code, body_dict):
@@ -688,20 +782,19 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body_bytes)
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Health check ───────────────────────────────────────────────────────────────
 
 def run_check(config_path):
-    """Self-diagnostic: verify ANTHROPIC_BASE_URL, proxy port, and reachability."""
-    sep   = "─" * 45
-    ok    = "✓"
-    fail  = "✗"
-    warn  = "!"
+    """Self-diagnostic: verify env vars, proxy port, and reachability for each provider."""
+    sep        = "─" * 45
+    ok         = "✓"
+    fail       = "✗"
+    warn       = "!"
     all_passed = True
 
     print(f"\n  SW-Sentinel Health Check")
     print(f"  {sep}")
 
-    # Load config to get host/port
     try:
         if os.path.exists(config_path):
             with open(config_path) as f:
@@ -716,25 +809,36 @@ def run_check(config_path):
     host  = cfg.get("proxy_host", "127.0.0.1")
     port  = cfg.get("proxy_port", 8080)
     token = cfg.get("proxy_token", "")
+    check_host = "127.0.0.1" if host == "0.0.0.0" else host
+    expected   = f"http://{host}:{port}"
 
-    # 1. Check ANTHROPIC_BASE_URL
-    base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
-    expected = f"http://{host}:{port}"
-    if base_url == expected:
-        print(f"  ANTHROPIC_BASE_URL ... {base_url}  {ok}")
-    elif base_url:
-        print(f"  ANTHROPIC_BASE_URL ... {base_url}  {warn}  (expected {expected})")
+    # 1. Check env vars for each provider
+    anthropic_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    openai_url    = os.environ.get("OPENAI_BASE_URL", "")
+
+    if anthropic_url == expected:
+        print(f"  ANTHROPIC_BASE_URL ... {anthropic_url}  {ok}")
+    elif anthropic_url:
+        print(f"  ANTHROPIC_BASE_URL ... {anthropic_url}  {warn}  (expected {expected})")
         all_passed = False
     else:
-        print(f"  ANTHROPIC_BASE_URL ... (not set)  {fail}")
-        print(f"    → Run: export ANTHROPIC_BASE_URL={expected}")
+        print(f"  ANTHROPIC_BASE_URL ... (not set)  {warn}")
+        print(f"    → To use Anthropic: export ANTHROPIC_BASE_URL={expected}")
+
+    if openai_url == expected:
+        print(f"  OPENAI_BASE_URL    ... {openai_url}  {ok}")
+    elif openai_url:
+        print(f"  OPENAI_BASE_URL    ... {openai_url}  {warn}  (expected {expected})")
         all_passed = False
+    else:
+        print(f"  OPENAI_BASE_URL    ... (not set)  {warn}")
+        print(f"    → To use OpenAI:    export OPENAI_BASE_URL={expected}")
 
     # 2. Check proxy port is listening
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(1)
-        listening = s.connect_ex((host if host != "0.0.0.0" else "127.0.0.1", port)) == 0
+        listening = s.connect_ex((check_host, port)) == 0
     if listening:
         print(f"  Proxy listening    ... {host}:{port}  {ok}")
     else:
@@ -742,31 +846,39 @@ def run_check(config_path):
         print(f"    → Start the proxy: sw-sentinel")
         all_passed = False
 
-    # 3. Check proxy reachability with a lightweight request
+    # 3. Check reachability for each provider endpoint
     if listening:
-        try:
-            import time
-            headers = {"Content-Type": "application/json"}
-            if token:
-                headers["X-Sentinel-Token"] = token
-            t0   = time.monotonic()
-            resp = requests.post(
-                f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/v1/messages",
-                headers=headers,
-                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
-                      "messages": [{"role": "user", "content": "ping"}]},
-                timeout=5
-            )
-            ms = int((time.monotonic() - t0) * 1000)
-            if resp.status_code == 401:
-                print(f"  Proxy reachable    ... got 401  {fail}")
-                print(f"    → proxy_token is set — include X-Sentinel-Token header in your app")
+        probe_requests = [
+            ("Anthropic", "/v1/messages",
+             {"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]}),
+            ("OpenAI",    "/v1/chat/completions",
+             {"model": "gpt-4o-mini", "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]}),
+        ]
+        headers_base = {"Content-Type": "application/json"}
+        if token:
+            headers_base["X-Sentinel-Token"] = token
+
+        for pname, path, payload in probe_requests:
+            try:
+                t0   = time.monotonic()
+                resp = requests.post(
+                    f"http://{check_host}:{port}{path}",
+                    headers=headers_base,
+                    json=payload,
+                    timeout=5
+                )
+                ms = int((time.monotonic() - t0) * 1000)
+                if resp.status_code == 401:
+                    print(f"  {pname:<10} {path} ... got 401  {fail}")
+                    print(f"    → proxy_token is set — include X-Sentinel-Token in your app")
+                    all_passed = False
+                else:
+                    print(f"  {pname:<10} {path} ... OK ({ms}ms)  {ok}")
+            except Exception as e:
+                print(f"  {pname:<10} {path} ... FAILED ({e})  {fail}")
                 all_passed = False
-            else:
-                print(f"  Proxy reachable    ... OK (responded in {ms}ms)  {ok}")
-        except Exception as e:
-            print(f"  Proxy reachable    ... FAILED ({e})  {fail}")
-            all_passed = False
 
     print(f"  {sep}")
     if all_passed:
@@ -778,8 +890,9 @@ def run_check(config_path):
 def main():
     global CONFIG, log
 
-    parser = argparse.ArgumentParser(description="SW-Sentinel — Superwise Guardrail Proxy for Anthropic API")
-    parser.add_argument("command", nargs="?", choices=["init", "check"], help="init: run setup wizard | check: verify proxy is reachable from this terminal")
+    parser = argparse.ArgumentParser(description="SW-Sentinel — Superwise Guardrail Proxy")
+    parser.add_argument("command", nargs="?", choices=["init", "check"],
+                        help="init: run setup wizard | check: verify proxy is reachable from this terminal")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to sentinel_config.json")
     parser.add_argument("--port",   type=int, help="Override proxy port from config")
     args = parser.parse_args()
@@ -802,6 +915,10 @@ def main():
     host = CONFIG.get("proxy_host", "127.0.0.1")
     port = CONFIG.get("proxy_port", 8080)
 
+    anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
+    openai_base    = CONFIG.get("openai_api_base",    "https://api.openai.com")
+    groq_base      = CONFIG.get("groq_api_base",      "https://api.groq.com")
+
     # Initialize violation log
     violation_log = CONFIG.get("violation_log", "sw_sentinel_violations.log")
     with open(violation_log, "a") as f:
@@ -812,16 +929,20 @@ def main():
 
     log.info(f"{'='*55}")
     log.info(f"  SW-Sentinel — Superwise Guardrail Proxy")
-    log.info(f"  v1.0.0")
+    log.info(f"  v1.1.0")
     log.info(f"{'='*55}")
-    log.info(f"  Proxy:         {host}:{port}")
-    log.info(f"  Forwarding to: {CONFIG.get('anthropic_api_base', 'https://api.anthropic.com')}")
+    log.info(f"  Proxy:    {host}:{port}")
+    log.info(f"  Providers:")
+    log.info(f"    Anthropic  /v1/messages                → {anthropic_base}")
+    log.info(f"    OpenAI     /v1/chat/completions        → {openai_base}")
+    log.info(f"    Groq       /openai/v1/chat/completions → {groq_base}")
     log.info(f"  Violation log: {violation_log}")
     log.info(f"  On SW error:   {CONFIG.get('on_superwise_error', 'fail_open')}")
     log.info(f"{'='*55}")
     log.info(f"")
-    log.info(f"  To use with any Anthropic app:")
-    log.info(f"  export ANTHROPIC_BASE_URL=http://{host}:{port}")
+    log.info(f"  To use with Anthropic: export ANTHROPIC_BASE_URL=http://{host}:{port}")
+    log.info(f"  To use with OpenAI:    export OPENAI_BASE_URL=http://{host}:{port}")
+    log.info(f"  To use with Groq:      export GROQ_BASE_URL=http://{host}:{port}")
     log.info(f"")
 
     # Initialize Superwise client

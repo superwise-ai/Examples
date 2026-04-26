@@ -1,15 +1,24 @@
 # SW-Sentinel
-### Superwise Guardrail Proxy for Anthropic API
+### Superwise Guardrail Proxy for LLM APIs
 
-SW-Sentinel is a lightweight HTTP proxy that sits between your app and `api.anthropic.com`. Every LLM call is automatically intercepted and run through **Superwise guardrail checks** before being forwarded — without any changes to your application code.
+SW-Sentinel is a lightweight HTTP proxy that sits between your app and any supported LLM provider. Every call is automatically intercepted and run through **Superwise guardrail checks** before being forwarded — without any changes to your application code.
 
-**Built for API-first teams:** SW-Sentinel is designed for applications and workflows that call Claude via the Anthropic API using an API key (`sk-ant-...`). If your team is building on Claude — internal tools, automations, agentic workflows — you're in the right place. Tools that authenticate via a Claude.ai subscription (including Claude Code on a Team or Pro plan) use OAuth rather than an API key, so their traffic runs outside SW-Sentinel's intercept layer. For full guardrail coverage across your organization, pairing SW-Sentinel with a dedicated API key deployment is the recommended approach.
+**Supported providers (auto-detected, no config required):**
+| Provider | Path | Default Upstream |
+|----------|------|-----------------|
+| Anthropic | `/v1/messages` | `api.anthropic.com` |
+| OpenAI | `/v1/chat/completions` | `api.openai.com` |
+| Groq | `/openai/v1/chat/completions` | `api.groq.com` |
+
+**OpenAI-compatible providers** (Mistral, Together AI, Ollama, LM Studio, Perplexity, etc.) work automatically at the `/v1/chat/completions` path — just point their base URL at the proxy.
+
+**Built for API-first teams:** SW-Sentinel is designed for applications and workflows that call LLM providers directly via an API key. If your team is building internal tools, automations, or agentic workflows, you're in the right place. Tools that authenticate via a subscription (including Claude Code on a Team or Pro plan) use OAuth rather than an API key, so their traffic runs outside SW-Sentinel's intercept layer. For full guardrail coverage across your organization, pairing SW-Sentinel with a dedicated API key deployment is the recommended approach.
 
 ---
 
 ## What Does It Do?
 
-SW-Sentinel acts as a security checkpoint for all Anthropic API traffic:
+SW-Sentinel acts as a security checkpoint for all LLM API traffic:
 
 ```
 Your App  →  SW-Sentinel (port 8080)
@@ -25,7 +34,9 @@ Your App  →  SW-Sentinel (port 8080)
            BLOCKED       PASSED
               ↓             ↓
        Canned response  api.anthropic.com
-       returned to app       ↓
+       returned to app  api.openai.com
+                        api.groq.com
+                             ↓
                        Response checked
                        (output guardrails)
                              ↓
@@ -33,10 +44,10 @@ Your App  →  SW-Sentinel (port 8080)
 ```
 
 **Both directions are checked:**
-- **Input** — text your app sends to the LLM is screened before it reaches Anthropic
+- **Input** — text your app sends to the LLM is screened before it reaches the provider
 - **Output** — the LLM's response is screened before it reaches your app
 
-If a check fails, a safe canned message is returned. Your app never sees the blocked content.
+If a check fails, a safe canned message is returned in the provider's native response format. Your app never sees the blocked content.
 
 ---
 
@@ -157,20 +168,16 @@ docker restart <container_name>
 
 ## Connecting Your App
 
-Set one environment variable — that's all your app needs:
+Point your app at the proxy with one environment variable. SW-Sentinel auto-detects the provider from the request path — no other configuration needed.
+
+### Anthropic
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
 ```
 
-**Works with:**
-- Claude Code
-- Python `anthropic` SDK
-- LangChain with Anthropic backend
-- LlamaIndex with Anthropic backend
-- Any tool that respects `ANTHROPIC_BASE_URL`
+Works with Claude Code, the Python `anthropic` SDK, LangChain, LlamaIndex, and any tool that respects `ANTHROPIC_BASE_URL`.
 
-**Example — Python SDK:**
 ```python
 import anthropic, os
 
@@ -184,13 +191,68 @@ message = client.messages.create(
 )
 ```
 
-**Example — Claude Code CLI:**
+### OpenAI
+
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
-claude  # all traffic now routes through SW-Sentinel
+export OPENAI_BASE_URL=http://127.0.0.1:8080
 ```
 
-**Streaming requests** (e.g. `stream=True`) are fully supported. The proxy accumulates the streamed response text and checks it before passing the stream back to your app.
+Works with the Python `openai` SDK, LangChain, LlamaIndex, and any OpenAI-compatible tool.
+
+```python
+import openai, os
+
+os.environ["OPENAI_BASE_URL"] = "http://127.0.0.1:8080"
+
+client = openai.OpenAI()  # automatically routes through SW-Sentinel
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+
+### Groq
+
+```bash
+export GROQ_BASE_URL=http://127.0.0.1:8080
+```
+
+Works with the Python `groq` SDK and any OpenAI-compatible client pointed at the Groq path.
+
+### OpenAI-compatible providers (Mistral, Ollama, Together AI, etc.)
+
+Any provider that uses the OpenAI-compatible `/v1/chat/completions` format works automatically — just set their base URL to `http://127.0.0.1:8080`.
+
+### VS Code — Continue extension
+
+[Continue](https://continue.dev) is a free, open-source AI coding assistant for VS Code and JetBrains that supports any LLM provider via a configurable base URL. To route Continue traffic through SW-Sentinel, add this to your `~/.continue/config.json`:
+
+```json
+{
+  "models": [
+    {
+      "title": "Claude via SW-Sentinel",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "apiBase": "http://127.0.0.1:8080"
+    },
+    {
+      "title": "GPT-4o via SW-Sentinel",
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "apiBase": "http://127.0.0.1:8080"
+    }
+  ]
+}
+```
+
+Every code completion and chat request from Continue will be guardrail-checked before reaching the upstream model.
+
+> **Note:** GitHub Copilot, Cursor, and Windsurf use proprietary APIs and do not support a configurable base URL, so they cannot be routed through SW-Sentinel.
+
+### Streaming
+
+Streaming requests (`stream=True`) are fully supported. The proxy accumulates the streamed response text, runs the output guardrail check, and then passes the stream back to your app.
 
 **Verify everything is wired up correctly** by running this in the same terminal as your app:
 ```bash
@@ -244,10 +306,13 @@ You should see the startup banner:
 ```
 =======================================================
   SW-Sentinel — Superwise Guardrail Proxy
-  v1.0.0
+  v1.1.0
 =======================================================
-  Proxy:         0.0.0.0:8080
-  Forwarding to: https://api.anthropic.com
+  Proxy:    0.0.0.0:8080
+  Providers:
+    Anthropic  /v1/messages                → https://api.anthropic.com
+    OpenAI     /v1/chat/completions        → https://api.openai.com
+    Groq       /openai/v1/chat/completions → https://api.groq.com
   Violation log: sw_sentinel_violations.log
 =======================================================
 Proxy ready. Waiting for requests...
@@ -280,6 +345,8 @@ docker restart sw-sentinel
 | `SUPERWISE_CLIENT_ID` | Yes | Your Superwise client ID |
 | `SUPERWISE_CLIENT_SECRET` | Yes | Your Superwise client secret |
 | `ANTHROPIC_API_KEY` | Recommended | Anthropic API key to inject into forwarded requests |
+| `OPENAI_API_KEY` | Recommended | OpenAI API key to inject into forwarded requests |
+| `GROQ_API_KEY` | Recommended | Groq API key to inject into forwarded requests |
 | `SENTINEL_HOST` | No | Host to bind to (default: `0.0.0.0`) |
 | `SENTINEL_PORT` | No | Port to listen on (default: `8080`) |
 
@@ -294,7 +361,11 @@ docker restart sw-sentinel
 | `proxy_host` | `127.0.0.1` | Host to bind proxy to. Use `0.0.0.0` for Docker / network access |
 | `proxy_port` | `8080` | Port to listen on |
 | `anthropic_api_base` | `https://api.anthropic.com` | Upstream Anthropic API to forward to |
-| `anthropic_api_key` | `""` | Optional. Injects your API key into forwarded requests |
+| `anthropic_api_key` | `""` | Optional. Injects your Anthropic API key into forwarded requests |
+| `openai_api_base` | `https://api.openai.com` | Upstream OpenAI API to forward to |
+| `openai_api_key` | `""` | Optional. Injects your OpenAI API key into forwarded requests |
+| `groq_api_base` | `https://api.groq.com` | Upstream Groq API to forward to |
+| `groq_api_key` | `""` | Optional. Injects your Groq API key into forwarded requests |
 | `proxy_token` | `""` | Optional shared secret. If set, clients must send `X-Sentinel-Token: <token>` header. Recommended when `proxy_host` is `0.0.0.0` |
 | `upstream_timeout_seconds` | `120` | How long to wait for Anthropic to respond |
 | `max_request_bytes` | `10MB` | Requests larger than 10MB are rejected with HTTP 413 |
