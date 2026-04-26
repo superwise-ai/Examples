@@ -45,7 +45,7 @@ If a check fails, a safe canned message is returned. Your app never sees the blo
 | Check | Direction | Description |
 |-------|-----------|-------------|
 | **PII Detection** | Input + Output | Blocks SSNs, credit cards, bank numbers, and other personal data |
-| **Jailbreak Detection** | Input | Detects attempts to bypass the LLM's safety guidelines |
+| **Jailbreak Detection** | Input | Detects attempts to bypass the LLM's safety guidelines *(optional — disabled by default, see [note below](#jailbreak-detection--important-note))* |
 | **Toxicity Detection** | Input + Output | Detects harmful, abusive, or inappropriate language |
 | **Prompt Injection** | Input | Catches attempts to hijack the AI's instructions (e.g. "ignore all previous instructions") |
 
@@ -327,37 +327,33 @@ On every subsequent startup, the proxy looks up these two guardrails by name, re
 
 ### Initial configuration (`sentinel_config.json`)
 
-The `guardrails` block controls what gets created on first run. Each check can be enabled/disabled and tuned independently for input and output:
+The `guardrails` block controls what gets created on first run. It uses a list format — add any guard types you want, with their parameters:
 
 ```json
 "guardrails": {
-  "input": {
-    "pii_detection": {
-      "enabled": true,
-      "threshold": 0.5,
-      "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
-    },
-    "jailbreak_detection": {
-      "enabled": true
-    },
-    "toxicity_detection": {
-      "enabled": false,
-      "threshold": 0.5
-    }
-  },
-  "output": {
-    "pii_detection": {
-      "enabled": true,
-      "threshold": 0.5,
-      "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
-    },
-    "toxicity_detection": {
-      "enabled": false,
-      "threshold": 0.5
-    }
-  }
+  "input": [
+    {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
+    {"type": "detect_jailbreak", "threshold": 0.7},
+    {"type": "restricted_topics", "topics": ["violence", "self-harm"]}
+  ],
+  "output": [
+    {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]}
+  ]
 }
 ```
+
+### Available guard types
+
+| Type | Parameters | Description |
+|------|-----------|-------------|
+| `pii_detection` | `threshold`, `categories` | Blocks personally identifiable information |
+| `detect_jailbreak` | `threshold` | Detects attempts to bypass LLM safety guidelines |
+| `toxicity` | `threshold`, `validation_method` | Detects harmful or abusive language |
+| `restricted_topics` | `topics` (list) | Blocks messages about specific topics |
+| `allowed_topics` | `topics` (list) | Only allows messages about specified topics |
+| `competitor_check` | `competitor_names` (list) | Blocks mentions of named competitors |
+| `correct_language` | `language_codes`, `filter_mode` | Enforces language (e.g. English only) |
+| `string_check` | `regex_pattern` (list) | Blocks custom regex patterns |
 
 **`threshold`** — confidence score (0.0–1.0) above which a detection triggers a block. Lower = stricter, Higher = more permissive.
 

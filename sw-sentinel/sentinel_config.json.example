@@ -41,32 +41,40 @@
     "Base directory for this skill"
   ],
 
+  "_comment_guardrails": [
+    "guardrails: list of Superwise guard checks to apply on first run.",
+    "Each entry requires a 'type' field. Available types and their parameters:",
+    "",
+    "  pii_detection       — threshold (0.0-1.0), categories (list of PII entity names)",
+    "  detect_jailbreak    — threshold (0.0-1.0)",
+    "  toxicity            — threshold (0.0-1.0), validation_method ('sentence' or 'full')",
+    "  allowed_topics      — topics (list of strings: only these topics are allowed)",
+    "  restricted_topics   — topics (list of strings: these topics are blocked)",
+    "  competitor_check    — competitor_names (list of competitor names to block)",
+    "  correct_language    — language_codes (list, e.g. ['en']), filter_mode ('include' or 'exclude')",
+    "  string_check        — regex_pattern (list of regex strings to block)",
+    "",
+    "Note: these settings are used only on first run to create guardrails in your Superwise tenant.",
+    "After that, manage guardrails via the Superwise UI and restart the proxy to pick up changes."
+  ],
   "guardrails": {
-    "input": {
-      "pii_detection": {
-        "enabled": true,
+    "input": [
+      {
+        "type": "pii_detection",
         "threshold": 0.5,
         "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
       },
-      "jailbreak_detection": {
-        "enabled": false,
-        "_comment": "Set true to enable. Note: may produce false positives on internal orchestration messages. See README."
-      },
-      "toxicity_detection": {
-        "enabled": false,
-        "threshold": 0.5
+      {
+        "type": "detect_jailbreak",
+        "threshold": 0.7
       }
-    },
-    "output": {
-      "pii_detection": {
-        "enabled": true,
+    ],
+    "output": [
+      {
+        "type": "pii_detection",
         "threshold": 0.5,
         "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
-      },
-      "toxicity_detection": {
-        "enabled": false,
-        "threshold": 0.5
       }
-    }
+    ]
   }
 }

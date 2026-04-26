@@ -73,15 +73,13 @@ def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1",
         ],
         "skip_patterns": [],
         "guardrails": {
-            "input": {
-                "pii_detection":      {"enabled": True,  "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
-                "jailbreak_detection":{"enabled": True},
-                "toxicity_detection": {"enabled": False, "threshold": 0.5}
-            },
-            "output": {
-                "pii_detection":      {"enabled": True,  "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
-                "toxicity_detection": {"enabled": False, "threshold": 0.5}
-            }
+            "input": [
+                {"type": "pii_detection",    "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
+                {"type": "detect_jailbreak", "threshold": 0.7}
+            ],
+            "output": [
+                {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]}
+            ]
         }
     }
 
@@ -270,15 +268,49 @@ def check_injection_patterns(text, request_id="unknown"):
     return False, ""
 
 def build_guards(direction):
-    """Build guardrail list from config."""
+    """Build guardrail list from config. Supports list format and legacy named-block format."""
     from superwise_api.models.guardrails.guardrails import (
-        ToxicityGuard, PiiDetectionGuard, DetectJailbreakGuard
+        AllowedTopicsGuard, CompetitorCheckGuard, CorrectLanguageGuard,
+        DetectJailbreakGuard, PiiDetectionGuard, RestrictedTopicsGuard,
+        StringCheckGuard, ToxicityGuard
     )
 
-    guards      = []
-    guard_cfg   = CONFIG.get("guardrails", {})
-    dir_cfg     = guard_cfg.get(direction, {})
+    GUARD_REGISTRY = {
+        "pii_detection":      PiiDetectionGuard,
+        "detect_jailbreak":   DetectJailbreakGuard,
+        "toxicity":           ToxicityGuard,
+        "allowed_topics":     AllowedTopicsGuard,
+        "restricted_topics":  RestrictedTopicsGuard,
+        "competitor_check":   CompetitorCheckGuard,
+        "correct_language":   CorrectLanguageGuard,
+        "string_check":       StringCheckGuard,
+    }
 
+    guards    = []
+    guard_cfg = CONFIG.get("guardrails", {})
+    dir_cfg   = guard_cfg.get(direction, {})
+
+    # ── New list format ────────────────────────────────────────────────────────
+    if isinstance(dir_cfg, list):
+        for entry in dir_cfg:
+            guard_type = entry.get("type")
+            if not guard_type:
+                log.warning(f"Guardrail entry missing 'type' field — skipping: {entry}")
+                continue
+            cls = GUARD_REGISTRY.get(guard_type)
+            if not cls:
+                log.warning(f"Unknown guardrail type '{guard_type}' — skipping")
+                continue
+            params = {k: v for k, v in entry.items() if k != "type"}
+            params.setdefault("name", f"Sentinel {direction.title()} {guard_type.replace('_', ' ').title()}")
+            params.setdefault("tags", [direction])
+            try:
+                guards.append(cls(**params))
+            except Exception as e:
+                log.warning(f"Failed to create guard '{guard_type}': {e}")
+        return guards
+
+    # ── Legacy named-block format (backward compatibility) ────────────────────
     if dir_cfg.get("pii_detection", {}).get("enabled", False):
         categories = set(dir_cfg["pii_detection"].get("categories", ["US_SSN", "CREDIT_CARD"]))
         threshold  = dir_cfg["pii_detection"].get("threshold", 0.5)
