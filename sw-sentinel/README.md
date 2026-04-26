@@ -37,6 +37,7 @@ Your App  →  SW-Sentinel (port 8080)
        Canned response  api.anthropic.com
        returned to app  api.openai.com
                         api.groq.com
+                        googleapis.com
                              ↓
                        Response checked
                        (output guardrails)
@@ -120,14 +121,20 @@ You should see:
 ```
 =======================================================
   SW-Sentinel — Superwise Guardrail Proxy
-  v1.0.0
+  v1.1.0
 =======================================================
-  Proxy:         127.0.0.1:8080
-  Forwarding to: https://api.anthropic.com
+  Proxy:    127.0.0.1:8080
+  Providers:
+    Anthropic  /v1/messages                     → https://api.anthropic.com
+    OpenAI     /v1/chat/completions             → https://api.openai.com
+    Groq       /openai/v1/chat/completions      → https://api.groq.com
+    Gemini     /v1beta/openai/chat/completions  → https://generativelanguage.googleapis.com
   Violation log: sw_sentinel_violations.log
 =======================================================
-  To use with any Anthropic app:
-  export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+  To use with Anthropic: export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+  To use with OpenAI:    export OPENAI_BASE_URL=http://127.0.0.1:8080
+  To use with Groq:      export GROQ_BASE_URL=http://127.0.0.1:8080
+  To use with Gemini:    export GEMINI_BASE_URL=http://127.0.0.1:8080
 
   Superwise connection: OK
 =======================================================
@@ -713,16 +720,21 @@ sudo systemctl start sw-sentinel
 ```bash
 sw-sentinel check
 ```
-This checks whether `ANTHROPIC_BASE_URL` is set correctly, the proxy port is listening, and the proxy responds — with fix hints for each failure:
+This checks whether your provider env vars are set, the proxy port is listening, and each provider endpoint responds — with fix hints for each failure:
 ```
   SW-Sentinel Health Check
   ─────────────────────────────────────────────
-  ANTHROPIC_BASE_URL ... (not set)  ✗
-    → Run: export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+  ANTHROPIC_BASE_URL     ... http://127.0.0.1:8080  ✓
+  OPENAI_BASE_URL        ... http://127.0.0.1:8080  ✓
+  GROQ_BASE_URL          ... http://127.0.0.1:8080  ✓
+  GEMINI_BASE_URL        ... http://127.0.0.1:8080  ✓
   Proxy listening    ... 127.0.0.1:8080  ✓
-  Proxy reachable    ... OK (responded in 12ms)  ✓
+  Anthropic  /v1/messages ... OK (3127ms)  ✓
+  OpenAI     /v1/chat/completions ... OK (884ms)  ✓
+  Groq       /openai/v1/chat/completions ... OK (657ms)  ✓
+  Gemini     /v1beta/openai/chat/completions ... OK (2731ms)  ✓
   ─────────────────────────────────────────────
-  One or more checks failed. See suggestions above.
+  All checks passed. Your app is routing through SW-Sentinel.
 ```
 
 **Nothing appears in Superwise dashboard**

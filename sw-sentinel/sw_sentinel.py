@@ -827,26 +827,32 @@ def run_check(config_path):
     expected   = f"http://{host}:{port}"
 
     # 1. Check env vars for each provider
-    anthropic_url = os.environ.get("ANTHROPIC_BASE_URL", "")
-    openai_url    = os.environ.get("OPENAI_BASE_URL", "")
+    provider_env_vars = [
+        ("ANTHROPIC_BASE_URL", "Anthropic"),
+        ("OPENAI_BASE_URL",    "OpenAI   "),
+        ("GROQ_BASE_URL",      "Groq     "),
+        ("GEMINI_BASE_URL",    "Gemini   "),
+    ]
+    any_url_set = False
+    for env_var, label in provider_env_vars:
+        url = os.environ.get(env_var, "")
+        if url == expected:
+            print(f"  {env_var:<22} ... {url}  {ok}")
+            any_url_set = True
+        elif url:
+            print(f"  {env_var:<22} ... {url}  {warn}  (expected {expected})")
+            all_passed = False
+            any_url_set = True
+        else:
+            print(f"  {env_var:<22} ... (not set)")
 
-    if anthropic_url == expected:
-        print(f"  ANTHROPIC_BASE_URL ... {anthropic_url}  {ok}")
-    elif anthropic_url:
-        print(f"  ANTHROPIC_BASE_URL ... {anthropic_url}  {warn}  (expected {expected})")
-        all_passed = False
-    else:
-        print(f"  ANTHROPIC_BASE_URL ... (not set)  {warn}")
-        print(f"    → To use Anthropic: export ANTHROPIC_BASE_URL={expected}")
-
-    if openai_url == expected:
-        print(f"  OPENAI_BASE_URL    ... {openai_url}  {ok}")
-    elif openai_url:
-        print(f"  OPENAI_BASE_URL    ... {openai_url}  {warn}  (expected {expected})")
-        all_passed = False
-    else:
-        print(f"  OPENAI_BASE_URL    ... (not set)  {warn}")
-        print(f"    → To use OpenAI:    export OPENAI_BASE_URL={expected}")
+    if not any_url_set:
+        print(f"")
+        print(f"  No provider env vars set. Set at least one to route traffic through SW-Sentinel:")
+        print(f"    export ANTHROPIC_BASE_URL={expected}")
+        print(f"    export OPENAI_BASE_URL={expected}")
+        print(f"    export GROQ_BASE_URL={expected}")
+        print(f"    export GEMINI_BASE_URL={expected}")
 
     # 2. Check proxy port is listening
     import socket
@@ -890,11 +896,15 @@ def run_check(config_path):
                     timeout=5
                 )
                 ms = int((time.monotonic() - t0) * 1000)
-                if resp.status_code == 401:
+                # Check if the proxy itself rejected the request (proxy token required)
+                is_proxy_401 = (resp.status_code == 401 and
+                                b"X-Sentinel-Token" in resp.content)
+                if is_proxy_401:
                     print(f"  {pname:<10} {path} ... got 401  {fail}")
                     print(f"    → proxy_token is set — include X-Sentinel-Token in your app")
                     all_passed = False
                 else:
+                    # Any response (even upstream errors) means the proxy is alive
                     print(f"  {pname:<10} {path} ... OK ({ms}ms)  {ok}")
             except Exception as e:
                 print(f"  {pname:<10} {path} ... FAILED ({e})  {fail}")
