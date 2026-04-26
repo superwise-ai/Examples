@@ -16,6 +16,9 @@
   "groq_api_base": "https://api.groq.com",
   "groq_api_key":  "",
 
+  "gemini_api_base": "https://generativelanguage.googleapis.com",
+  "gemini_api_key":  "",
+
   "_comment_token": "proxy_token: optional shared secret. If set, clients must send X-Sentinel-Token header. Recommended when proxy_host is 0.0.0.0.",
   "proxy_token": "",
 

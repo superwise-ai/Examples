@@ -9,6 +9,7 @@ SW-Sentinel is a lightweight HTTP proxy that sits between your app and any suppo
 | Anthropic | `/v1/messages` | `api.anthropic.com` |
 | OpenAI | `/v1/chat/completions` | `api.openai.com` |
 | Groq | `/openai/v1/chat/completions` | `api.groq.com` |
+| Gemini | `/v1beta/openai/chat/completions` | `generativelanguage.googleapis.com` |
 
 **OpenAI-compatible providers** (Mistral, Together AI, Ollama, LM Studio, Perplexity, etc.) work automatically at the `/v1/chat/completions` path — just point their base URL at the proxy.
 
@@ -219,6 +220,31 @@ export GROQ_BASE_URL=http://127.0.0.1:8080
 
 Works with the Python `groq` SDK and any OpenAI-compatible client pointed at the Groq path.
 
+### Gemini
+
+SW-Sentinel connects to Gemini via its OpenAI-compatible endpoint. Use the `openai` Python SDK pointed at the proxy, or any OpenAI-compatible client.
+
+```bash
+export GEMINI_BASE_URL=http://127.0.0.1:8080
+```
+
+```python
+import openai, os
+
+client = openai.OpenAI(
+    api_key=os.environ["GEMINI_API_KEY"],
+    base_url="http://127.0.0.1:8080/v1beta/openai"
+)
+response = client.chat.completions.create(
+    model="gemini-2.0-flash",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+
+Get a free Gemini API key at [aistudio.google.com](https://aistudio.google.com).
+
+> **Note:** This uses Gemini's OpenAI-compatible endpoint. The native `google-generativeai` SDK uses a different request format and is not currently supported.
+
 ### OpenAI-compatible providers (Mistral, Ollama, Together AI, etc.)
 
 Any provider that uses the OpenAI-compatible `/v1/chat/completions` format works automatically — just set their base URL to `http://127.0.0.1:8080`.
@@ -310,9 +336,10 @@ You should see the startup banner:
 =======================================================
   Proxy:    0.0.0.0:8080
   Providers:
-    Anthropic  /v1/messages                → https://api.anthropic.com
-    OpenAI     /v1/chat/completions        → https://api.openai.com
-    Groq       /openai/v1/chat/completions → https://api.groq.com
+    Anthropic  /v1/messages                     → https://api.anthropic.com
+    OpenAI     /v1/chat/completions             → https://api.openai.com
+    Groq       /openai/v1/chat/completions      → https://api.groq.com
+    Gemini     /v1beta/openai/chat/completions  → https://generativelanguage.googleapis.com
   Violation log: sw_sentinel_violations.log
 =======================================================
 Proxy ready. Waiting for requests...
@@ -347,6 +374,7 @@ docker restart sw-sentinel
 | `ANTHROPIC_API_KEY` | Recommended | Anthropic API key to inject into forwarded requests |
 | `OPENAI_API_KEY` | Recommended | OpenAI API key to inject into forwarded requests |
 | `GROQ_API_KEY` | Recommended | Groq API key to inject into forwarded requests |
+| `GEMINI_API_KEY` | Recommended | Gemini API key to inject into forwarded requests |
 | `SENTINEL_HOST` | No | Host to bind to (default: `0.0.0.0`) |
 | `SENTINEL_PORT` | No | Port to listen on (default: `8080`) |
 
@@ -366,6 +394,8 @@ docker restart sw-sentinel
 | `openai_api_key` | `""` | Optional. Injects your OpenAI API key into forwarded requests |
 | `groq_api_base` | `https://api.groq.com` | Upstream Groq API to forward to |
 | `groq_api_key` | `""` | Optional. Injects your Groq API key into forwarded requests |
+| `gemini_api_base` | `https://generativelanguage.googleapis.com` | Upstream Gemini API to forward to |
+| `gemini_api_key` | `""` | Optional. Injects your Gemini API key into forwarded requests |
 | `proxy_token` | `""` | Optional shared secret. If set, clients must send `X-Sentinel-Token: <token>` header. Recommended when `proxy_host` is `0.0.0.0` |
 | `upstream_timeout_seconds` | `120` | How long to wait for Anthropic to respond |
 | `max_request_bytes` | `10MB` | Requests larger than 10MB are rejected with HTTP 413 |

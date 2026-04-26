@@ -79,6 +79,16 @@ PROVIDERS = {
             "content-type", "authorization"
         },
     },
+    "/v1beta/openai/chat/completions": {
+        "name":                "Gemini",
+        "api_base_cfg":        "gemini_api_base",
+        "api_base_default":    "https://generativelanguage.googleapis.com",
+        "api_key_cfg":         "gemini_api_key",
+        "api_key_env":         "GEMINI_API_KEY",
+        "passthrough_headers": {
+            "content-type", "authorization"
+        },
+    },
 }
 
 def detect_provider(path):
@@ -100,6 +110,8 @@ def _default_config_body(client_id, client_secret, api_key="", host="127.0.0.1",
         "openai_api_key":           "",
         "groq_api_base":            "https://api.groq.com",
         "groq_api_key":             "",
+        "gemini_api_base":          "https://generativelanguage.googleapis.com",
+        "gemini_api_key":           "",
         "proxy_token":              "",
         "upstream_timeout_seconds": 120,
         "on_superwise_error":       "fail_open",
@@ -475,8 +487,8 @@ def extract_input_text(body, provider_name="Anthropic"):
 
     try:
         if skip_patterns:
-            if provider_name == "OpenAI":
-                # OpenAI: system prompt is a message with role "system"
+            if provider_name in _OPENAI_FORMAT_PROVIDERS:
+                # OpenAI-compatible: system prompt is a message with role "system"
                 parts = []
                 for m in body.get("messages", []):
                     if m.get("role") == "system":
@@ -531,10 +543,12 @@ def extract_input_text(body, provider_name="Anthropic"):
         pass
     return ""
 
+_OPENAI_FORMAT_PROVIDERS = {"OpenAI", "Groq", "Gemini"}
+
 def extract_output_text(body, provider_name="Anthropic"):
     """Extract assistant response text for guardrail checking."""
     try:
-        if provider_name == "OpenAI":
+        if provider_name in _OPENAI_FORMAT_PROVIDERS:
             choices = body.get("choices", [])
             if choices:
                 content = choices[0].get("message", {}).get("content", "") or ""
@@ -558,7 +572,7 @@ def extract_streaming_text(raw_content, provider_name="Anthropic"):
                 continue
             try:
                 data = json.loads(line[6:])
-                if provider_name == "OpenAI":
+                if provider_name in _OPENAI_FORMAT_PROVIDERS:
                     choices = data.get("choices", [])
                     if choices:
                         delta_content = choices[0].get("delta", {}).get("content", "")
@@ -580,7 +594,7 @@ def make_blocked_response(request_body, message, provider_name="Anthropic"):
     ts    = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     model = request_body.get("model", "unknown")
 
-    if provider_name == "OpenAI":
+    if provider_name in _OPENAI_FORMAT_PROVIDERS:
         return {
             "id":      f"sentinel_blocked_{ts}",
             "object":  "chat.completion",
@@ -855,6 +869,12 @@ def run_check(config_path):
             ("OpenAI",    "/v1/chat/completions",
              {"model": "gpt-4o-mini", "max_tokens": 1,
               "messages": [{"role": "user", "content": "ping"}]}),
+            ("Groq",      "/openai/v1/chat/completions",
+             {"model": "llama-3.1-8b-instant", "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]}),
+            ("Gemini",    "/v1beta/openai/chat/completions",
+             {"model": "gemini-1.5-flash", "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]}),
         ]
         headers_base = {"Content-Type": "application/json"}
         if token:
@@ -918,6 +938,7 @@ def main():
     anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
     openai_base    = CONFIG.get("openai_api_base",    "https://api.openai.com")
     groq_base      = CONFIG.get("groq_api_base",      "https://api.groq.com")
+    gemini_base    = CONFIG.get("gemini_api_base",    "https://generativelanguage.googleapis.com")
 
     # Initialize violation log
     violation_log = CONFIG.get("violation_log", "sw_sentinel_violations.log")
@@ -933,9 +954,10 @@ def main():
     log.info(f"{'='*55}")
     log.info(f"  Proxy:    {host}:{port}")
     log.info(f"  Providers:")
-    log.info(f"    Anthropic  /v1/messages                → {anthropic_base}")
-    log.info(f"    OpenAI     /v1/chat/completions        → {openai_base}")
-    log.info(f"    Groq       /openai/v1/chat/completions → {groq_base}")
+    log.info(f"    Anthropic  /v1/messages                     → {anthropic_base}")
+    log.info(f"    OpenAI     /v1/chat/completions             → {openai_base}")
+    log.info(f"    Groq       /openai/v1/chat/completions      → {groq_base}")
+    log.info(f"    Gemini     /v1beta/openai/chat/completions  → {gemini_base}")
     log.info(f"  Violation log: {violation_log}")
     log.info(f"  On SW error:   {CONFIG.get('on_superwise_error', 'fail_open')}")
     log.info(f"{'='*55}")
@@ -943,6 +965,7 @@ def main():
     log.info(f"  To use with Anthropic: export ANTHROPIC_BASE_URL=http://{host}:{port}")
     log.info(f"  To use with OpenAI:    export OPENAI_BASE_URL=http://{host}:{port}")
     log.info(f"  To use with Groq:      export GROQ_BASE_URL=http://{host}:{port}")
+    log.info(f"  To use with Gemini:    export GEMINI_BASE_URL=http://{host}:{port}")
     log.info(f"")
 
     # Initialize Superwise client
