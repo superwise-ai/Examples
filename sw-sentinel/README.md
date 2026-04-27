@@ -141,6 +141,8 @@ You should see:
 Proxy ready. Waiting for requests...
 ```
 
+In a separate terminal, run the `export` commands shown in the startup banner for each provider you're using. That's all your app needs to start routing through SW-Sentinel.
+
 ---
 
 ## Stopping and Restarting the Proxy
