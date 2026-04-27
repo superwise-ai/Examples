@@ -264,13 +264,17 @@ def init_sw_client():
 def init_sw_guardrails():
     """
     Load all guardrails from the Superwise tenant.
-    If none exist, create a default PII detection guardrail (input + output).
-    Direction filtering (input vs output) is handled by Superwise based on
-    each rule's 'Apply to' setting — configured via the Superwise UI or SDK tags.
+    If a 'guardrails' block exists in config, seed those into the tenant first
+    (creating them only if they don't already exist — UI changes are preserved).
+    If no guardrails exist after seeding, create a default PII detection guardrail.
     """
     global SW_GUARDRAIL_VERSION_IDS
 
     try:
+        # Seed from config if a guardrails block is present
+        if CONFIG.get("guardrails"):
+            _seed_config_guardrails()
+
         page  = SW_CLIENT.guardrails.get(size=100)
         items = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
 
@@ -286,6 +290,47 @@ def init_sw_guardrails():
 
     except Exception as e:
         log.warning(f"  Guardrail setup failed ({e}) — using stateless checks")
+
+def _seed_config_guardrails():
+    """
+    Create guardrails from the config 'guardrails' block if they don't already
+    exist in the tenant. Named 'SW-Sentinel Input' / 'SW-Sentinel Output'.
+    Skips silently if a guardrail with that name already exists, so any changes
+    made in the Superwise UI are never overwritten.
+    """
+    guardrail_cfg = CONFIG.get("guardrails", {})
+
+    for direction in ("input", "output"):
+        if not guardrail_cfg.get(direction):
+            continue
+
+        name = f"SW-Sentinel {direction.title()}"
+        try:
+            page     = SW_CLIENT.guardrails.get(search=name, size=25)
+            items    = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
+            existing = [g for g in items if g.name == name]
+
+            if existing:
+                log.info(f"  Config guardrail '{name}' already exists — skipping creation")
+                continue
+
+            guards = build_guards(direction)
+            if not guards:
+                continue
+
+            guardrail_id = str(SW_CLIENT.guardrails.create(
+                name=name,
+                description=f"SW-Sentinel {direction} guardrails — seeded from sentinel_config.json"
+            ).id)
+            SW_CLIENT.guardrails.create_version(
+                guardrail_id=guardrail_id,
+                name="v1",
+                guardrules=guards
+            )
+            log.info(f"  Config guardrail '{name}' created from sentinel_config.json")
+
+        except Exception as e:
+            log.warning(f"  Failed to seed config guardrail '{name}': {e}")
 
 def _create_default_guardrail():
     """Create a default PII detection guardrail (input + output) for new tenants."""

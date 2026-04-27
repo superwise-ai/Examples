@@ -422,7 +422,7 @@ docker restart sw-sentinel
 
 ## Guardrail Management
 
-SW-Sentinel loads **every published guardrail in your Superwise tenant** at startup and enforces them on all traffic. There is no fixed list of guardrails in `sentinel_config.json` — your Superwise tenant is the source of truth.
+SW-Sentinel loads **every published guardrail in your Superwise tenant** at startup and enforces them on all traffic. You can define your starting guardrails in `sentinel_config.json`, manage them entirely through the Superwise UI, or both.
 
 ### How direction works
 
@@ -434,18 +434,38 @@ Each guardrail in the Superwise UI has an **"Apply to"** setting:
 
 SW-Sentinel respects this setting automatically. Set a toxicity guardrail to Input only if you don't want it running on model output. Set a PII guardrail to Both if you want it covering the full conversation. No code changes needed — just configure it in the UI and restart the proxy.
 
-### Adding or modifying checks
+### Option A — Define guardrails in `sentinel_config.json`
+
+Add a `guardrails` block to your config with the checks you want:
+
+```json
+"guardrails": {
+  "input": [
+    {"type": "pii_detection",    "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
+    {"type": "detect_jailbreak", "threshold": 0.7}
+  ],
+  "output": [
+    {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]}
+  ]
+}
+```
+
+On first startup, SW-Sentinel creates **"SW-Sentinel Input"** and **"SW-Sentinel Output"** guardrails in your Superwise tenant using these settings. On every subsequent startup it finds they already exist and skips creation — so any changes you make to them in the Superwise UI are never overwritten.
+
+### Option B — Manage guardrails in the Superwise UI
+
+Skip the `guardrails` block entirely and create guardrails directly in the Superwise UI:
 
 1. Log into [app.superwise.ai](https://app.superwise.ai) → **Guardrails**
-2. Create a new guardrail (or edit an existing one), configure your rules, and set "Apply to"
+2. Create a new guardrail, configure your rules, and set "Apply to"
 3. Publish the guardrail
 4. Restart the proxy — `sw-sentinel` or `systemctl restart sw-sentinel`
 
-Any guardrail you create will be picked up automatically on the next restart. You can have as many as you need — topic restrictions, competitor detection, language enforcement, custom regex — and SW-Sentinel enforces them all.
+Any guardrail in your tenant is picked up automatically on the next restart.
 
 ### First run with no guardrails
 
-If your Superwise tenant has no guardrails at all, SW-Sentinel creates a default **"SW-Sentinel PII Detection"** guardrail (Input + Output) to get you started. It covers SSNs, credit cards, and bank numbers at a 0.5 confidence threshold. Edit or replace it in the UI at any time.
+If your Superwise tenant has no guardrails and no `guardrails` block in config, SW-Sentinel creates a default **"SW-Sentinel PII Detection"** guardrail (Input + Output) to get you started. It covers SSNs, credit cards, and bank numbers at a 0.5 confidence threshold. Edit or replace it in the UI at any time.
 
 ### Available check types
 
@@ -516,7 +536,7 @@ Every guardrail in your tenant appears under **Guardrails** in the Superwise UI,
 
 ## Adding or Changing Compliance Checks
 
-See [Guardrail Management](#guardrail-management) above. The short version: create or modify guardrails in the Superwise UI, publish them, and restart the proxy. SW-Sentinel picks up everything in your tenant — there is no separate list to maintain here.
+See [Guardrail Management](#guardrail-management) above. Two paths: define guardrails in the `guardrails` block of `sentinel_config.json` (SW-Sentinel creates them in your tenant on first run), or create them directly in the Superwise UI. Either way, SW-Sentinel picks up all tenant guardrails on every startup.
 
 ---
 
@@ -730,6 +750,19 @@ This checks whether your provider env vars are set, the proxy port is listening,
 **Nothing appears in Superwise dashboard**
 → Confirm the proxy started without errors (look for `Superwise connection: OK` in startup output)
 → Send a test request and check `sw_sentinel.log` for `Checking` lines confirming guardrail calls
+
+---
+
+## Superwise MCP Servers
+
+If you're extending or customizing SW-Sentinel, Superwise publishes two MCP servers that give AI code editors (Claude Code, Cursor, Windsurf) direct access to Superwise documentation and SDK reference — making it much easier to write integration code against the platform.
+
+| Server | URL | Best for |
+|--------|-----|----------|
+| API & User Guides | `https://docs.superwise.ai/mcp` | REST API calls, HTTP integration code |
+| Python SDK Reference | `https://mcp.sdk.docs.superwise.ai/mcp` | Python SDK (`superwise_api`) development |
+
+Setup instructions for all supported editors: https://docs.superwise.ai/docs/mcp
 
 ---
 

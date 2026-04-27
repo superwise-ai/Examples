@@ -48,5 +48,36 @@
     "Continue your Paperclip work",
     "You are agent",
     "Base directory for this skill"
-  ]
+  ],
+
+  "_comment_guardrails": [
+    "guardrails: optional. Define guardrails here to have SW-Sentinel create them in your",
+    "Superwise tenant on first run (as 'SW-Sentinel Input' and 'SW-Sentinel Output').",
+    "If those guardrails already exist in your tenant, this block is ignored — your",
+    "Superwise UI settings are preserved. Leave this block out entirely to manage",
+    "guardrails exclusively through the Superwise UI.",
+    "",
+    "Available types: pii_detection, detect_jailbreak, toxicity, restricted_topics,",
+    "allowed_topics, competitor_check, correct_language, string_check"
+  ],
+  "guardrails": {
+    "input": [
+      {
+        "type": "pii_detection",
+        "threshold": 0.5,
+        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
+      },
+      {
+        "type": "detect_jailbreak",
+        "threshold": 0.7
+      }
+    ],
+    "output": [
+      {
+        "type": "pii_detection",
+        "threshold": 0.5,
+        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
+      }
+    ]
+  }
 }
