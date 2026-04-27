@@ -538,15 +538,23 @@ If you see false positives on known-safe system prompt content, add those string
 
 ## Proxy Token Authentication
 
-When `proxy_token` is set in your config, every client request must include it as a header:
+**Most users don't need this.** If you're running SW-Sentinel on your local machine, skip this section entirely.
+
+`proxy_token` is only relevant if you're deploying SW-Sentinel via Docker or exposing it on your network. In those cases, without a token, anyone who can reach port 8080 could route traffic through your LLM API keys.
+
+**To enable it**, generate a strong random string and add it to `sentinel_config.json`:
+
+```json
+"proxy_token": "your-random-token-here"
+```
+
+Once set, every client request must include it as a header:
 
 ```bash
 X-Sentinel-Token: your-token-here
 ```
 
 Requests without the correct token are rejected with HTTP 401 before any guardrail check runs.
-
-**The `sw-sentinel init` wizard generates a strong random token automatically** and displays it at the end of setup. Copy it and add it to your app's headers.
 
 **Example — curl:**
 ```bash
@@ -575,8 +583,6 @@ docker run -d --name sw-sentinel -p 8080:8080 \
   -e PROXY_TOKEN=your-token-here \
   sw-sentinel
 ```
-
-> `proxy_token` is optional when running on `127.0.0.1` (local only). It is strongly recommended when `proxy_host` is `0.0.0.0`.
 
 ---
 
@@ -662,9 +668,8 @@ sudo systemctl start sw-sentinel
 ## Security Considerations
 
 - SW-Sentinel binds to `127.0.0.1` by default — only accessible from the local machine
-- If you set `proxy_host` to `0.0.0.0` (e.g. Docker), set a `proxy_token` in your config — clients must then send `X-Sentinel-Token: <token>` with every request, preventing unauthorized use of your Anthropic API key
-- The `sw-sentinel init` wizard automatically generates a strong random token and displays it after setup
-- `sentinel_config.json` is written with owner-only permissions (`600`) by the wizard — do not loosen these
+- If you set `proxy_host` to `0.0.0.0` (e.g. Docker), set a `proxy_token` in your config — clients must then send `X-Sentinel-Token: <token>` with every request, preventing unauthorized use of your LLM API keys
+- `sentinel_config.json` should be kept with owner-only permissions (`600`) — do not loosen these
 - The violation log may contain snippets of sensitive content — protect it accordingly
 - `fail_open` is the default for availability; switch to `fail_closed` for strict compliance environments
 

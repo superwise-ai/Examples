@@ -190,8 +190,11 @@ def run_init_wizard(config_path):
     print(f"\n  {sep}")
     print(f"  Config saved → {config_path}")
     print(f"")
-    print(f"  Proxy token (add to your app as X-Sentinel-Token header):")
-    print(f"  {proxy_token}")
+    print(f"  Proxy token: {proxy_token}")
+    print(f"")
+    print(f"  Note: this token is only needed if you deploy SW-Sentinel")
+    print(f"  via Docker or expose it on your network. For local use,")
+    print(f"  you can ignore it — no token setup required.")
     print(f"  {sep}\n")
     return config
 
