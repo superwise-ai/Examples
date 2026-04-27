@@ -867,7 +867,10 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
                 self.send_header(key, val)
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
-        self.wfile.write(body_bytes)
+        try:
+            self.wfile.write(body_bytes)
+        except BrokenPipeError:
+            pass
 
     def _send_error(self, status_code, message):
         body       = json.dumps({"error": {"type": "proxy_error", "message": message}})
@@ -976,7 +979,7 @@ def run_check(config_path):
                     f"http://{check_host}:{port}{path}",
                     headers=headers_base,
                     json=payload,
-                    timeout=5
+                    timeout=15
                 )
                 ms = int((time.monotonic() - t0) * 1000)
                 # Check if the proxy itself rejected the request (proxy token required)
