@@ -1,7 +1,7 @@
 # SW-Sentinel
 ### Superwise Guardrail Proxy for LLM APIs
 
-SW-Sentinel is a lightweight HTTP proxy that sits between your app and any supported LLM provider. Every call is automatically intercepted and run through **Superwise guardrail checks** before being forwarded — without any changes to your application code.
+SW-Sentinel is a lightweight HTTP proxy that sits between your app and any supported LLM provider. Every call is automatically intercepted and run through **your Superwise guardrails** before being forwarded — without any changes to your application code. The proxy loads all guardrails from your Superwise tenant at startup and enforces them on every request; you manage them entirely from the Superwise UI.
 
 **Supported providers (auto-detected, no config required):**
 | Provider | Path | Default Upstream |
@@ -26,10 +26,10 @@ Your App  →  SW-Sentinel (port 8080)
                     ↓
           ┌─────────────────────┐
           │  Guardrail Checks   │
-          │  • PII detection    │
-          │  • Jailbreak detect │
-          │  • Toxicity detect  │
+          │  • Your Superwise   │
+          │    tenant guardrails│
           │  • Prompt injection │
+          │    (built-in)       │
           └─────────────────────┘
                ↓           ↓
            BLOCKED       PASSED
@@ -55,14 +55,14 @@ If a check fails, a safe canned message is returned in the provider's native res
 
 ## What Gets Detected?
 
-| Check | Direction | Description |
+| Check | Typical Direction | Description |
 |-------|-----------|-------------|
 | **PII Detection** | Input + Output | Blocks SSNs, credit cards, bank numbers, and other personal data |
-| **Jailbreak Detection** | Input | Detects attempts to bypass the LLM's safety guidelines *(optional — disabled by default, see [note below](#jailbreak-detection--important-note))* |
-| **Toxicity Detection** | Input + Output | Detects harmful, abusive, or inappropriate language |
-| **Prompt Injection** | Input | Catches attempts to hijack the AI's instructions (e.g. "ignore all previous instructions") |
+| **Jailbreak Detection** | Input | Detects attempts to bypass the LLM's safety guidelines *(see [note below](#jailbreak-detection--important-note))* |
+| **Toxicity Detection** | Input | Detects harmful, abusive, or inappropriate language |
+| **Prompt Injection** | Input | Catches attempts to hijack the AI's instructions (e.g. "ignore all previous instructions") — built-in, always active |
 
-PII and jailbreak checks are powered by the **Superwise** platform. Prompt injection uses fast built-in regex patterns that run locally with no external call.
+The direction and thresholds for each Superwise-powered check are configured per-guardrail in the Superwise UI — see [Guardrail Management](#guardrail-management). **By default (empty tenant), SW-Sentinel creates a PII Detection guardrail covering both input and output.** All other checks require creating a guardrail in the Superwise UI. Prompt injection is built-in and always active regardless of tenant configuration.
 
 ---
 
@@ -170,7 +170,7 @@ sudo systemctl start sw-sentinel
 docker restart <container_name>
 ```
 
-> A restart is required any time you publish updated guardrails in the Superwise UI — the proxy reads the current guardrail version once at startup.
+> A restart is required any time you create, modify, or delete guardrails in the Superwise UI — the proxy reads the current guardrail state once at startup.
 
 ---
 
@@ -404,7 +404,7 @@ docker restart sw-sentinel
 | `gemini_api_base` | `https://generativelanguage.googleapis.com` | Upstream Gemini API to forward to |
 | `gemini_api_key` | `""` | Optional. Injects your Gemini API key into forwarded requests |
 | `proxy_token` | `""` | Optional shared secret. If set, clients must send `X-Sentinel-Token: <token>` header. Recommended when `proxy_host` is `0.0.0.0` |
-| `upstream_timeout_seconds` | `120` | How long to wait for Anthropic to respond |
+| `upstream_timeout_seconds` | `120` | How long to wait for the upstream LLM provider to respond |
 | `max_request_bytes` | `10MB` | Requests larger than 10MB are rejected with HTTP 413 |
 | `on_superwise_error` | `fail_open` | `fail_open` = allow if Superwise unreachable; `fail_closed` = block |
 | `max_check_chars` | `2000` | Max characters of text sent to Superwise per check |
@@ -418,54 +418,49 @@ docker restart sw-sentinel
 
 ---
 
-## Guardrail Configuration
+## Guardrail Management
 
-### How guardrails are created and used
+SW-Sentinel loads **every published guardrail in your Superwise tenant** at startup and enforces them on all traffic. There is no fixed list of guardrails in `sentinel_config.json` — your Superwise tenant is the source of truth.
 
-On first startup, SW-Sentinel automatically creates two persistent guardrail objects in your Superwise tenant:
+### How direction works
 
-- **SW-Sentinel Input** — checks text sent to the LLM
-- **SW-Sentinel Output** — checks responses returned from the LLM
+Each guardrail in the Superwise UI has an **"Apply to"** setting:
 
-These are built from the `guardrails` block in `sentinel_config.json` and registered in your Superwise account via the SDK. Once created, they appear under **Guardrails** in the Superwise UI and all check results are logged to your dashboard.
+- **Input** — checked against text your app sends to the LLM
+- **Output** — checked against the LLM's response
+- **Both** — checked in both directions
 
-On every subsequent startup, the proxy looks up these two guardrails by name, retrieves the current version, and uses that for all checks. **The `guardrails` block in `sentinel_config.json` is only read once — at initial creation.** After that, your Superwise tenant is the source of truth.
+SW-Sentinel respects this setting automatically. Set a toxicity guardrail to Input only if you don't want it running on model output. Set a PII guardrail to Both if you want it covering the full conversation. No code changes needed — just configure it in the UI and restart the proxy.
 
-> To modify guardrails after initial setup, log into your tenant at https://app.superwise.ai → Guardrails, edit `SW-Sentinel Input` or `SW-Sentinel Output`, publish the new version, and restart the proxy.
+### Adding or modifying checks
 
-### Initial configuration (`sentinel_config.json`)
+1. Log into [app.superwise.ai](https://app.superwise.ai) → **Guardrails**
+2. Create a new guardrail (or edit an existing one), configure your rules, and set "Apply to"
+3. Publish the guardrail
+4. Restart the proxy — `sw-sentinel` or `systemctl restart sw-sentinel`
 
-The `guardrails` block controls what gets created on first run. It uses a list format — add any guard types you want, with their parameters:
+Any guardrail you create will be picked up automatically on the next restart. You can have as many as you need — topic restrictions, competitor detection, language enforcement, custom regex — and SW-Sentinel enforces them all.
 
-```json
-"guardrails": {
-  "input": [
-    {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]},
-    {"type": "detect_jailbreak", "threshold": 0.7},
-    {"type": "restricted_topics", "topics": ["violence", "self-harm"]}
-  ],
-  "output": [
-    {"type": "pii_detection", "threshold": 0.5, "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]}
-  ]
-}
-```
+### First run with no guardrails
 
-### Available guard types
+If your Superwise tenant has no guardrails at all, SW-Sentinel creates a default **"SW-Sentinel PII Detection"** guardrail (Input + Output) to get you started. It covers SSNs, credit cards, and bank numbers at a 0.5 confidence threshold. Edit or replace it in the UI at any time.
 
-| Type | Parameters | Description |
-|------|-----------|-------------|
-| `pii_detection` | `threshold`, `categories` | Blocks personally identifiable information |
-| `detect_jailbreak` | `threshold` | Detects attempts to bypass LLM safety guidelines |
-| `toxicity` | `threshold`, `validation_method` | Detects harmful or abusive language |
-| `restricted_topics` | `topics` (list) | Blocks messages about specific topics |
-| `allowed_topics` | `topics` (list) | Only allows messages about specified topics |
-| `competitor_check` | `competitor_names` (list) | Blocks mentions of named competitors |
-| `correct_language` | `language_codes`, `filter_mode` | Enforces language (e.g. English only) |
-| `string_check` | `regex_pattern` (list) | Blocks custom regex patterns |
+### Available check types
 
-**`threshold`** — confidence score (0.0–1.0) above which a detection triggers a block. Lower = stricter, Higher = more permissive.
+| Type | Description |
+|------|-------------|
+| `pii_detection` | SSNs, credit cards, bank numbers, emails, phones, and more |
+| `detect_jailbreak` | Attempts to bypass the LLM's safety guidelines |
+| `toxicity` | Harmful, abusive, or inappropriate language |
+| `restricted_topics` | Blocks messages about specific topics you define |
+| `allowed_topics` | Only allows messages about topics you specify |
+| `competitor_check` | Blocks mentions of named competitors |
+| `correct_language` | Enforces a specific language (e.g. English only) |
+| `string_check` | Custom regex patterns |
 
-**PII categories** — common options supported by Superwise:
+**`threshold`** — confidence score (0.0–1.0) above which a detection triggers a block. Lower = stricter, higher = more permissive.
+
+**PII categories** — common options:
 
 | Category | Example |
 |----------|---------|
@@ -513,37 +508,25 @@ Guardrail results are logged to your **Superwise dashboard** at https://app.supe
 - When and how often violations occurred
 - Historical trends over time
 
-The proxy creates persistent guardrail objects in your Superwise tenant on startup (`Sentinel Input` and `Sentinel Output`). These appear under **Guardrails** in the Superwise UI.
+Every guardrail in your tenant appears under **Guardrails** in the Superwise UI, and all SW-Sentinel check results feed into your dashboard automatically.
 
 ---
 
 ## Adding or Changing Compliance Checks
 
-SW-Sentinel creates two guardrail objects in your Superwise tenant on first startup: **SW-Sentinel Input** and **SW-Sentinel Output**. These are the only guardrails the proxy ever uses — it identifies them by name and ignores everything else in your tenant.
-
-**The Superwise UI is the right place to customize checks.** After the proxy has run once and created those two guardrails, log into your tenant at https://app.superwise.ai → Guardrails and edit them directly. Add new rules, adjust thresholds, or enable additional detection types. Save/publish the new version in the UI, then restart the proxy — it will pick up the updated version automatically on next startup.
-
-> **Note:** Creating a brand-new guardrail in the Superwise UI will not be used by SW-Sentinel. Changes must be made to the existing `SW-Sentinel Input` and `SW-Sentinel Output` guardrails.
-
-> **Note:** The `guardrails` block in `sentinel_config.json` only applies the first time those guardrail objects are created. Once they exist in Superwise, the UI is the source of truth and the config file settings are ignored.
-
-**To add or change compliance checks:**
-1. Log into your tenant at https://app.superwise.ai → Guardrails
-2. Open `SW-Sentinel Input` or `SW-Sentinel Output`
-3. Add or modify the checks you want
-4. Save and publish the new version
-5. Restart the proxy (`sw-sentinel`) to activate the changes
+See [Guardrail Management](#guardrail-management) above. The short version: create or modify guardrails in the Superwise UI, publish them, and restart the proxy. SW-Sentinel picks up everything in your tenant — there is no separate list to maintain here.
 
 ---
 
 ## Jailbreak Detection — Important Note
 
-Jailbreak detection is **disabled by default** in `sentinel_config.json.example` because it can produce false positives on internal orchestration messages from frameworks like LangChain or LlamaIndex (e.g. "You are an AI assistant. Continue your work.").
+Jailbreak detection is **not included in the default guardrail** because it can produce false positives on internal orchestration messages from frameworks like LangChain or LlamaIndex (e.g. "You are an AI assistant. Continue your work.").
 
-If you enable it, use `skip_patterns` to whitelist known-safe messages:
+To enable it, create a `detect_jailbreak` guardrail in the Superwise UI set to **Input**, publish it, and restart the proxy.
+
+If you see false positives on known-safe system prompt content, add those strings to `skip_patterns` in `sentinel_config.json`:
 
 ```json
-"jailbreak_detection": { "enabled": true },
 "skip_patterns": ["You are an AI assistant", "Continue your work"]
 ```
 
@@ -699,8 +682,8 @@ sudo systemctl start sw-sentinel
 
 **Requests are blocked that shouldn't be**
 → Check `sw_sentinel_violations.log` to see which guardrail triggered
-→ If it's jailbreak detection on internal messages, add those messages to `skip_patterns`
-→ Raise the `threshold` value for the relevant guardrail (e.g. `0.7` instead of `0.5`)
+→ If it's jailbreak detection on internal messages, add those messages to `skip_patterns` in `sentinel_config.json`
+→ Raise the `threshold` value for the relevant guardrail in the Superwise UI (e.g. `0.7` instead of `0.5`), publish, and restart the proxy
 
 **500 errors or Superwise connection issues**
 → Reduce `max_check_chars` if sending very large payloads

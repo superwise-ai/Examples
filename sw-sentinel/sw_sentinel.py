@@ -225,7 +225,7 @@ def load_config(config_path):
 
 CONFIG                   = {}
 SW_CLIENT                = None
-SW_GUARDRAIL_VERSION_IDS = {}   # direction -> set of version UUIDs for run_versions()
+SW_GUARDRAIL_VERSION_IDS = set()  # version UUIDs — same set runs on input and output
 INJECTION_RE             = []
 log                      = None
 _sw_lock                 = threading.Lock()
@@ -259,44 +259,69 @@ def init_sw_client():
     )
 
 def init_sw_guardrails():
-    """Create or retrieve persistent Superwise guardrails so checks appear in the dashboard."""
+    """
+    Load all guardrails from the Superwise tenant.
+    If none exist, create a default PII detection guardrail (input + output).
+    Direction filtering (input vs output) is handled by Superwise based on
+    each rule's 'Apply to' setting — configured via the Superwise UI or SDK tags.
+    """
     global SW_GUARDRAIL_VERSION_IDS
 
-    for direction in ["input", "output"]:
-        guards = build_guards(direction)
-        if not guards:
-            continue
+    try:
+        page  = SW_CLIENT.guardrails.get(size=100)
+        items = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
 
-        name = f"SW-Sentinel {direction.title()}"
-        try:
-            page  = SW_CLIENT.guardrails.get(search=name, size=25)
-            items = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
-            existing = [g for g in items if g.name == name]
-
-            if existing:
-                guardrail = existing[0]
+        if items:
+            for guardrail in items:
                 if guardrail.current_version:
-                    SW_GUARDRAIL_VERSION_IDS[direction] = {guardrail.current_version.id}
-                    log.info(f"  SW guardrail [{direction}]: existing (id={str(guardrail.id)[:8]}...)")
-                    continue
-                guardrail_id = str(guardrail.id)
-            else:
-                guardrail    = SW_CLIENT.guardrails.create(
-                    name=name,
-                    description=f"SW-Sentinel proxy {direction} guardrail"
-                )
-                guardrail_id = str(guardrail.id)
+                    SW_GUARDRAIL_VERSION_IDS.add(guardrail.current_version.id)
+                    log.info(f"  SW guardrail: '{guardrail.name}' (id={str(guardrail.id)[:8]}...)")
+            log.info(f"  Using {len(SW_GUARDRAIL_VERSION_IDS)} tenant guardrail(s) for all checks")
+        else:
+            log.info("  No guardrails found in tenant — creating default SW-Sentinel PII Detection")
+            _create_default_guardrail()
 
-            version = SW_CLIENT.guardrails.create_version(
-                guardrail_id=guardrail_id,
-                name="v1",
-                guardrules=guards
-            )
-            SW_GUARDRAIL_VERSION_IDS[direction] = {version.id}
-            log.info(f"  SW guardrail [{direction}]: created (version={str(version.id)[:8]}...)")
+    except Exception as e:
+        log.warning(f"  Guardrail setup failed ({e}) — using stateless checks")
 
-        except Exception as e:
-            log.warning(f"  SW guardrail [{direction}]: setup failed ({e}) — using stateless checks")
+def _create_default_guardrail():
+    """Create a default PII detection guardrail (input + output) for new tenants."""
+    global SW_GUARDRAIL_VERSION_IDS
+    from superwise_api.models.guardrails.guardrails import PiiDetectionGuard
+
+    name = "SW-Sentinel PII Detection"
+    try:
+        page  = SW_CLIENT.guardrails.get(search=name, size=25)
+        items = page.items if hasattr(page, "items") else (page if isinstance(page, list) else [])
+        existing = [g for g in items if g.name == name]
+
+        if existing and existing[0].current_version:
+            SW_GUARDRAIL_VERSION_IDS.add(existing[0].current_version.id)
+            log.info(f"  SW guardrail: '{name}' already exists (id={str(existing[0].id)[:8]}...)")
+            return
+
+        guardrail_id = str(existing[0].id) if existing else str(
+            SW_CLIENT.guardrails.create(
+                name=name,
+                description="Default SW-Sentinel PII detection — applied to input and output"
+            ).id
+        )
+        pii_guard = PiiDetectionGuard(
+            name="PII Detection",
+            tags=["input", "output"],
+            threshold=0.5,
+            categories=["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
+        )
+        version = SW_CLIENT.guardrails.create_version(
+            guardrail_id=guardrail_id,
+            name="v1",
+            guardrules=[pii_guard]
+        )
+        SW_GUARDRAIL_VERSION_IDS.add(version.id)
+        log.info(f"  SW guardrail: '{name}' created (version={str(version.id)[:8]}...)")
+
+    except Exception as e:
+        log.warning(f"  Failed to create default guardrail ({e}) — using stateless checks")
 
 def init_injection_patterns():
     """Pre-compile injection pattern regexes from config at startup."""
@@ -412,10 +437,10 @@ def run_guardrail_check(text, direction, request_id="unknown", provider_name="un
     log.info(f"[{provider_name}] Checking {len(text)} chars [{direction}] request_id={request_id}")
 
     try:
-        if direction in SW_GUARDRAIL_VERSION_IDS:
+        if SW_GUARDRAIL_VERSION_IDS:
             results = SW_CLIENT.guardrails.run_versions(
                 tag=direction,
-                ids=SW_GUARDRAIL_VERSION_IDS[direction],
+                ids=SW_GUARDRAIL_VERSION_IDS,
                 query=text[:max_chars]
             )
         else:

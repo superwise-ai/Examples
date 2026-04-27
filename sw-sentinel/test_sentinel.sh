@@ -99,6 +99,13 @@ curl_anthropic \
   | python3 -m json.tool
 
 echo ""
+echo "=== Test 4b: Toxic input (should BLOCK via Superwise toxicity guardrail) ==="
+curl_anthropic \
+  -H "x-api-key: fake-key" \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":100,"messages":[{"role":"user","content":"I hate you, you are worthless garbage and I want to destroy you."}]}' \
+  | python3 -m json.tool
+
+echo ""
 echo "=== Test 5: Streaming clean message (should FORWARD as SSE stream) ==="
 curl_anthropic \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":50,"stream":true,"messages":[{"role":"user","content":"Say hello in one word."}]}'
