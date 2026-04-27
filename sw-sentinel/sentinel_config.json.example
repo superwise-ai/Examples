@@ -51,33 +51,27 @@
   ],
 
   "_comment_guardrails": [
-    "guardrails: optional. Define guardrails here to have SW-Sentinel create them in your",
-    "Superwise tenant on first run (as 'SW-Sentinel Input' and 'SW-Sentinel Output').",
-    "If those guardrails already exist in your tenant, this block is ignored — your",
-    "Superwise UI settings are preserved. Leave this block out entirely to manage",
-    "guardrails exclusively through the Superwise UI.",
+    "OPTIONAL: To seed guardrails from this config file, add a 'guardrails' block below.",
+    "SW-Sentinel will create a single 'SW-Sentinel Guardrails' object in your Superwise",
+    "tenant on first run using these settings. If that guardrail already exists, this",
+    "block is ignored — your Superwise UI settings are always preserved.",
+    "",
+    "Leave this block out entirely to manage guardrails through the Superwise UI only.",
+    "If omitted and your tenant is empty, a default PII Detection guardrail is created.",
+    "",
+    "To enable: copy the block below, remove this comment key, and add it to your config.",
+    "",
+    "  \"guardrails\": {",
+    "    \"input\": [",
+    "      {\"type\": \"pii_detection\", \"threshold\": 0.5, \"categories\": [\"US_SSN\", \"CREDIT_CARD\", \"US_BANK_NUMBER\"]},",
+    "      {\"type\": \"detect_jailbreak\", \"threshold\": 0.7}",
+    "    ],",
+    "    \"output\": [",
+    "      {\"type\": \"pii_detection\", \"threshold\": 0.5, \"categories\": [\"US_SSN\", \"CREDIT_CARD\", \"US_BANK_NUMBER\"]}",
+    "    ]",
+    "  }",
     "",
     "Available types: pii_detection, detect_jailbreak, toxicity, restricted_topics,",
     "allowed_topics, competitor_check, correct_language, string_check"
-  ],
-  "guardrails": {
-    "input": [
-      {
-        "type": "pii_detection",
-        "threshold": 0.5,
-        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
-      },
-      {
-        "type": "detect_jailbreak",
-        "threshold": 0.7
-      }
-    ],
-    "output": [
-      {
-        "type": "pii_detection",
-        "threshold": 0.5,
-        "categories": ["US_SSN", "CREDIT_CARD", "US_BANK_NUMBER"]
-      }
-    ]
-  }
+  ]
 }

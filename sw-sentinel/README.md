@@ -450,7 +450,7 @@ Add a `guardrails` block to your config with the checks you want:
 }
 ```
 
-On first startup, SW-Sentinel creates **"SW-Sentinel Input"** and **"SW-Sentinel Output"** guardrails in your Superwise tenant using these settings. On every subsequent startup it finds they already exist and skips creation — so any changes you make to them in the Superwise UI are never overwritten.
+On first startup, SW-Sentinel creates a single **"SW-Sentinel Guardrails"** object in your Superwise tenant using the rules defined in this block. On every subsequent startup it finds it already exists and skips creation — so any changes you make to it in the Superwise UI are never overwritten.
 
 ### Option B — Manage guardrails in the Superwise UI
 
