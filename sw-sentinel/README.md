@@ -1,7 +1,7 @@
 # SW-Sentinel
 ### Superwise Guardrail Proxy for LLM APIs
 
-SW-Sentinel is a lightweight HTTP proxy that sits between your app and any supported LLM provider. Every call is automatically intercepted and run through **your Superwise guardrails** before being forwarded — without any changes to your application code. The proxy loads all guardrails from your Superwise tenant at startup and enforces them on every request; you manage them entirely from the Superwise UI.
+SW-Sentinel is a lightweight HTTP proxy that sits between your app and any supported LLM provider. Every call is automatically intercepted and run through **your Superwise guardrails** before being forwarded — without any changes to your application code. The proxy loads all guardrails from your Superwise tenant at startup. Guardrails can be seeded from `sentinel_config.json` on first run, created directly in the Superwise UI, or both — after initial setup, the Superwise tenant is the source of truth.
 
 **Supported providers (auto-detected, no config required):**
 | Provider | Path | Default Upstream |
@@ -62,7 +62,7 @@ If a check fails, a safe canned message is returned in the provider's native res
 | **Toxicity Detection** | Input | Detects harmful, abusive, or inappropriate language |
 | **Prompt Injection** | Input | Catches attempts to hijack the AI's instructions (e.g. "ignore all previous instructions") — built-in, always active |
 
-The direction and thresholds for each Superwise-powered check are configured per-guardrail in the Superwise UI — see [Guardrail Management](#guardrail-management). **By default (empty tenant), SW-Sentinel creates a PII Detection guardrail covering both input and output.** All other checks require creating a guardrail in the Superwise UI. Prompt injection is built-in and always active regardless of tenant configuration.
+The direction and thresholds for each Superwise-powered check are configured per-guardrail — see [Guardrail Management](#guardrail-management). **By default (empty tenant), SW-Sentinel creates a PII Detection guardrail covering both input and output.** All other checks can be added via the `guardrails` block in `sentinel_config.json` (seeded into your tenant on first run) or created directly in the Superwise UI. Prompt injection is built-in and always active regardless of tenant configuration.
 
 ---
 
@@ -422,17 +422,17 @@ docker restart sw-sentinel
 
 ## Guardrail Management
 
-SW-Sentinel loads **every published guardrail in your Superwise tenant** at startup and enforces them on all traffic. You can define your starting guardrails in `sentinel_config.json`, manage them entirely through the Superwise UI, or both.
+SW-Sentinel loads **every published guardrail in your Superwise tenant** at startup and enforces them on all traffic. Guardrails can be seeded from `sentinel_config.json` on first run, created directly in the Superwise UI, or both. After initial setup, the Superwise tenant is the source of truth — config changes are not re-applied on restart.
 
 ### How direction works
 
-Each guardrail in the Superwise UI has an **"Apply to"** setting:
+Each guardrail in the Superwise UI has **"Apply to"** checkboxes:
 
 - **Input** — checked against text your app sends to the LLM
 - **Output** — checked against the LLM's response
-- **Both** — checked in both directions
+- **Both boxes checked** — checked in both directions
 
-SW-Sentinel respects this setting automatically. Set a toxicity guardrail to Input only if you don't want it running on model output. Set a PII guardrail to Both if you want it covering the full conversation. No code changes needed — just configure it in the UI and restart the proxy.
+SW-Sentinel respects these settings automatically. Check Input only for a toxicity guardrail if you don't want it running on model output. Check both boxes for a PII guardrail if you want it covering the full conversation. No code changes needed — just configure it in the UI and restart the proxy.
 
 ### Option A — Define guardrails in `sentinel_config.json`
 
