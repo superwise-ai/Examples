@@ -42,7 +42,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ── Default config path ────────────────────────────────────────────────────────
 
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sentinel_config.json")
+DEFAULT_CONFIG_PATH = os.path.join(os.getcwd(), "sentinel_config.json")
 
 # ── Provider routing table ─────────────────────────────────────────────────────
 
@@ -162,6 +162,7 @@ def run_init_wizard(config_path):
     print(f"  No config found. Let's set things up.\n")
 
     print(f"  Superwise credentials  (app.superwise.ai → Settings):")
+    print(f"  (input is hidden — paste or type, then press Enter)\n")
     client_id = input("    Client ID:      > ").strip()
     if not client_id:
         print("ERROR: Superwise Client ID is required.")
@@ -171,7 +172,7 @@ def run_init_wizard(config_path):
         print("ERROR: Superwise Client Secret is required.")
         sys.exit(1)
 
-    print(f"\n  LLM Provider API Keys  (press Enter to skip any)")
+    print(f"\n  LLM Provider API Keys  (input is hidden — press Enter to skip any)")
     print(f"  You only need keys for the providers you plan to use.\n")
 
     anthropic_key = getpass.getpass("    Anthropic  (console.anthropic.com):        > ").strip()
@@ -180,7 +181,7 @@ def run_init_wizard(config_path):
     gemini_key    = getpass.getpass("    Gemini     (aistudio.google.com):           > ").strip()
 
     print(f"\n  Proxy settings:")
-    port_raw = input("    Port [8080]: > ").strip()
+    port_raw = input("    Port [8080] (press Enter for default): > ").strip()
     port = int(port_raw) if port_raw.isdigit() else 8080
 
     config = _default_config_body(client_id, client_secret, anthropic_key, port=port)

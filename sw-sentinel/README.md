@@ -76,45 +76,41 @@ The direction and thresholds for each Superwise-powered check are configured per
 
 ## Installation
 
-### Option A — pip install (recommended)
+[pipx](https://pipx.pypa.io) installs SW-Sentinel into an isolated environment and makes the `sw-sentinel` command globally available — without touching your system Python.
+
+**Install pipx if you don't have it:**
 
 ```bash
-pip install git+https://github.com/superwise-ai/Examples.git#subdirectory=sw-sentinel
+# Ubuntu / WSL / Debian
+sudo apt install pipx
+pipx ensurepath
+source ~/.bashrc
+
+# macOS
+brew install pipx
+pipx ensurepath
 ```
 
-This installs the `sw-sentinel` command globally. Then run the setup wizard:
+**Install SW-Sentinel:**
+
+```bash
+pipx install git+https://github.com/superwise-ai/Examples.git#subdirectory=sw-sentinel
+```
+
+**Run the setup wizard:**
 
 ```bash
 sw-sentinel init
 ```
 
-The wizard will ask for your Superwise credentials and API keys for each LLM provider you want to use (Anthropic, OpenAI, Groq, Gemini — all optional except Superwise), then write `sentinel_config.json` for you.
-
-### Option B — Run directly with Python
-
-```bash
-# 1. Install dependencies
-pip install requests superwise-api
-
-# 2. Copy the example config
-cp sentinel_config.json.example sentinel_config.json
-
-# 3. Edit sentinel_config.json and fill in your credentials
-#    (see Configuration Reference below)
-```
+The wizard will ask for your Superwise credentials and API keys for each LLM provider you want to use (Anthropic, OpenAI, Groq, Gemini — all optional except Superwise), then write `sentinel_config.json` in your current directory.
 
 ---
 
 ## Starting the Proxy
 
-**If installed via pip:**
 ```bash
 sw-sentinel
-```
-
-**If running directly:**
-```bash
-python3 sw_sentinel.py
 ```
 
 You should see:
