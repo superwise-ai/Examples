@@ -693,6 +693,9 @@ sudo systemctl start sw-sentinel
 
 ## Troubleshooting
 
+**Updating SW-Sentinel after a new release**
+→ Run `pipx reinstall sw-sentinel` to pull the latest version from GitHub
+
 **"Config file not found"**
 → Run `sw-sentinel init` to create one, or copy `sentinel_config.json.example` to `sentinel_config.json`
 

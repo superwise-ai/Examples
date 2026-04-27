@@ -929,6 +929,7 @@ def run_check(config_path):
             print(f"  {env_var:<22} ... (not set)")
 
     if not any_url_set:
+        all_passed = False
         print(f"")
         print(f"  No provider env vars set. Set at least one to route traffic through SW-Sentinel:")
         print(f"    export ANTHROPIC_BASE_URL={expected}")
@@ -995,6 +996,8 @@ def run_check(config_path):
     print(f"  {sep}")
     if all_passed:
         print(f"  All checks passed. Your app is routing through SW-Sentinel.\n")
+    elif not any_url_set:
+        print(f"  Proxy is running — set at least one provider env var above to start routing traffic.\n")
     else:
         print(f"  One or more checks failed. See suggestions above.\n")
 
