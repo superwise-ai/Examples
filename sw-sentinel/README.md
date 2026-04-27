@@ -88,7 +88,7 @@ This installs the `sw-sentinel` command globally. Then run the setup wizard:
 sw-sentinel init
 ```
 
-The wizard will ask for your Superwise credentials and Anthropic API key, then write `sentinel_config.json` for you.
+The wizard will ask for your Superwise credentials and API keys for each LLM provider you want to use (Anthropic, OpenAI, Groq, Gemini — all optional except Superwise), then write `sentinel_config.json` for you.
 
 ### Option B — Run directly with Python
 

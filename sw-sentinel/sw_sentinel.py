@@ -160,26 +160,33 @@ def run_init_wizard(config_path):
     print(f"  SW-Sentinel First-Time Setup")
     print(f"  {sep}")
     print(f"  No config found. Let's set things up.\n")
-    print(f"  Superwise credentials  (app.superwise.ai → Settings):")
 
+    print(f"  Superwise credentials  (app.superwise.ai → Settings):")
     client_id = input("    Client ID:      > ").strip()
     if not client_id:
         print("ERROR: Superwise Client ID is required.")
         sys.exit(1)
-
     client_secret = getpass.getpass("    Client Secret:  > ").strip()
     if not client_secret:
         print("ERROR: Superwise Client Secret is required.")
         sys.exit(1)
 
-    print(f"\n  Anthropic API Key  (console.anthropic.com → API Keys):")
-    api_key = getpass.getpass("    API Key (Enter to skip): > ").strip()
+    print(f"\n  LLM Provider API Keys  (press Enter to skip any)")
+    print(f"  You only need keys for the providers you plan to use.\n")
+
+    anthropic_key = getpass.getpass("    Anthropic  (console.anthropic.com):        > ").strip()
+    openai_key    = getpass.getpass("    OpenAI     (platform.openai.com/api-keys): > ").strip()
+    groq_key      = getpass.getpass("    Groq       (console.groq.com/keys):        > ").strip()
+    gemini_key    = getpass.getpass("    Gemini     (aistudio.google.com):           > ").strip()
 
     print(f"\n  Proxy settings:")
     port_raw = input("    Port [8080]: > ").strip()
     port = int(port_raw) if port_raw.isdigit() else 8080
 
-    config = _default_config_body(client_id, client_secret, api_key, port=port)
+    config = _default_config_body(client_id, client_secret, anthropic_key, port=port)
+    config["openai_api_key"]  = openai_key
+    config["groq_api_key"]    = groq_key
+    config["gemini_api_key"]  = gemini_key
     proxy_token = secrets.token_urlsafe(32)
     config["proxy_token"] = proxy_token
 
@@ -187,8 +194,16 @@ def run_init_wizard(config_path):
     with os.fdopen(fd, "w") as f:
         json.dump(config, f, indent=2)
 
+    configured = [p for p, k in [("Anthropic", anthropic_key), ("OpenAI", openai_key), ("Groq", groq_key), ("Gemini", gemini_key)] if k]
+    skipped    = [p for p, k in [("Anthropic", anthropic_key), ("OpenAI", openai_key), ("Groq", groq_key), ("Gemini", gemini_key)] if not k]
+
     print(f"\n  {sep}")
     print(f"  Config saved → {config_path}")
+    print(f"")
+    if configured:
+        print(f"  Providers configured: {', '.join(configured)}")
+    if skipped:
+        print(f"  Skipped (add later):  {', '.join(skipped)}")
     print(f"")
     print(f"  Proxy token: {proxy_token}")
     print(f"")
