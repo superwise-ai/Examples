@@ -151,10 +151,22 @@ def _config_from_env():
         port=int(os.environ.get("SENTINEL_PORT", "8080")),
     )
 
+def _mask_key(key):
+    """Show first 8 and last 4 chars, mask the middle."""
+    if len(key) <= 12:
+        return key[:4] + "..." + key[-2:] if len(key) > 6 else "***"
+    return key[:8] + "..." + key[-4:]
+
+def _prompt_secret(prompt):
+    """Prompt for a hidden value and print a masked confirmation."""
+    import getpass
+    value = getpass.getpass(prompt).strip()
+    if value:
+        print(f"      ✓ received: {_mask_key(value)}")
+    return value
+
 def run_init_wizard(config_path):
     """Interactive first-time setup wizard. Returns the saved config dict."""
-    import getpass
-
     sep = "─" * 45
     print(f"\n  {sep}")
     print(f"  SW-Sentinel First-Time Setup")
@@ -167,7 +179,7 @@ def run_init_wizard(config_path):
     if not client_id:
         print("ERROR: Superwise Client ID is required.")
         sys.exit(1)
-    client_secret = getpass.getpass("    Client Secret:  > ").strip()
+    client_secret = _prompt_secret("    Client Secret:  > ")
     if not client_secret:
         print("ERROR: Superwise Client Secret is required.")
         sys.exit(1)
@@ -175,10 +187,10 @@ def run_init_wizard(config_path):
     print(f"\n  LLM Provider API Keys  (input is hidden — press Enter to skip any)")
     print(f"  You only need keys for the providers you plan to use.\n")
 
-    anthropic_key = getpass.getpass("    Anthropic  (console.anthropic.com):        > ").strip()
-    openai_key    = getpass.getpass("    OpenAI     (platform.openai.com/api-keys): > ").strip()
-    groq_key      = getpass.getpass("    Groq       (console.groq.com/keys):        > ").strip()
-    gemini_key    = getpass.getpass("    Gemini     (aistudio.google.com):           > ").strip()
+    anthropic_key = _prompt_secret("    Anthropic  (console.anthropic.com):        > ")
+    openai_key    = _prompt_secret("    OpenAI     (platform.openai.com/api-keys): > ")
+    groq_key      = _prompt_secret("    Groq       (console.groq.com/keys):        > ")
+    gemini_key    = _prompt_secret("    Gemini     (aistudio.google.com):           > ")
 
     print(f"\n  Proxy settings:")
     port_raw = input("    Port [8080] (press Enter for default): > ").strip()
