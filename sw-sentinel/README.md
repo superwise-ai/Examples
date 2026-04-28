@@ -296,8 +296,10 @@ sw-sentinel check
 
 SW-Sentinel includes a `Dockerfile` for containerized deployments.
 
-**Build the image:**
+**Clone the repo and build the image:**
 ```bash
+git clone https://github.com/superwise-ai/Examples.git
+cd Examples/sw-sentinel
 docker build -t sw-sentinel .
 ```
 
