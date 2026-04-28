@@ -53,6 +53,7 @@ PROVIDERS = {
         "api_base_default":    "https://api.anthropic.com",
         "api_key_cfg":         "anthropic_api_key",
         "api_key_env":         "ANTHROPIC_API_KEY",
+        "auth_format":         "x-api-key",
         "passthrough_headers": {
             "content-type", "anthropic-version", "anthropic-beta",
             "x-api-key", "authorization"
@@ -64,6 +65,7 @@ PROVIDERS = {
         "api_base_default":    "https://api.openai.com",
         "api_key_cfg":         "openai_api_key",
         "api_key_env":         "OPENAI_API_KEY",
+        "auth_format":         "bearer",
         "passthrough_headers": {
             "content-type", "authorization",
             "openai-organization", "openai-project"
@@ -75,6 +77,7 @@ PROVIDERS = {
         "api_base_default":    "https://api.groq.com",
         "api_key_cfg":         "groq_api_key",
         "api_key_env":         "GROQ_API_KEY",
+        "auth_format":         "bearer",
         "passthrough_headers": {
             "content-type", "authorization"
         },
@@ -85,6 +88,7 @@ PROVIDERS = {
         "api_base_default":    "https://generativelanguage.googleapis.com",
         "api_key_cfg":         "gemini_api_key",
         "api_key_env":         "GEMINI_API_KEY",
+        "auth_format":         "bearer",
         "passthrough_headers": {
             "content-type", "authorization"
         },
@@ -852,15 +856,13 @@ class SentinelProxyHandler(BaseHTTPRequestHandler):
         for key, val in self.headers.items():
             if key.lower() in provider["passthrough_headers"]:
                 headers[key] = val
-        # Inject API key from config/env if client didn't send one
+        # Always inject API key from config/env, overwriting whatever the client sent
         api_key = CONFIG.get(provider["api_key_cfg"]) or os.environ.get(provider["api_key_env"], "")
         if api_key:
-            if provider["name"] == "OpenAI":
-                if "authorization" not in {k.lower() for k in headers}:
-                    headers["Authorization"] = f"Bearer {api_key}"
+            if provider.get("auth_format") == "bearer":
+                headers["Authorization"] = f"Bearer {api_key}"
             else:
-                if "x-api-key" not in {k.lower() for k in headers}:
-                    headers["x-api-key"] = api_key
+                headers["x-api-key"] = api_key
         return headers
 
     def _send_json_response(self, status_code, body_dict):
