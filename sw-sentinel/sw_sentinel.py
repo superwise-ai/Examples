@@ -1044,8 +1044,8 @@ def main():
     if args.port:
         CONFIG["proxy_port"] = args.port
 
-    host = CONFIG.get("proxy_host", "127.0.0.1")
-    port = CONFIG.get("proxy_port", 8080)
+    host = os.environ.get("SENTINEL_HOST") or CONFIG.get("proxy_host", "127.0.0.1")
+    port = int(os.environ.get("SENTINEL_PORT") or CONFIG.get("proxy_port", 8080))
 
     anthropic_base = CONFIG.get("anthropic_api_base", "https://api.anthropic.com")
     openai_base    = CONFIG.get("openai_api_base",    "https://api.openai.com")
@@ -1074,10 +1074,11 @@ def main():
     log.info(f"  On SW error:   {CONFIG.get('on_superwise_error', 'fail_open')}")
     log.info(f"{'='*55}")
     log.info(f"")
-    log.info(f"  To use with Anthropic: export ANTHROPIC_BASE_URL=http://{host}:{port}")
-    log.info(f"  To use with OpenAI:    export OPENAI_BASE_URL=http://{host}:{port}")
-    log.info(f"  To use with Groq:      export GROQ_BASE_URL=http://{host}:{port}")
-    log.info(f"  To use with Gemini:    export GEMINI_BASE_URL=http://{host}:{port}")
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+    log.info(f"  To use with Anthropic: export ANTHROPIC_BASE_URL=http://{display_host}:{port}")
+    log.info(f"  To use with OpenAI:    export OPENAI_BASE_URL=http://{display_host}:{port}")
+    log.info(f"  To use with Groq:      export GROQ_BASE_URL=http://{display_host}:{port}")
+    log.info(f"  To use with Gemini:    export GEMINI_BASE_URL=http://{display_host}:{port}")
     log.info(f"")
 
     # Initialize Superwise client
